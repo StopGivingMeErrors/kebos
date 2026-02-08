@@ -183,16 +183,7 @@ const Dashboard = () => {
     }
   };
 
-  // Mark a slot booked
-  const markBooked = async (slotId) => {
-    try {
-      const slotRef = doc(db, "schedules", slotId);
-      await updateDoc(slotRef, { isBooked: true });
-    } catch (error) {
-      console.error("Error marking slot booked:", error);
-      alert("Failed to mark slot as booked");
-    }
-  };
+  
 
   const cancelBooking = async (booking) => {
     if (!window.confirm(`Cancel booking for ${booking.name}?`)) {
