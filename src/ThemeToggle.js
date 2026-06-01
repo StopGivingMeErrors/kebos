@@ -3,7 +3,7 @@ import React from "react";
 
 export default function ThemeToggle({ darkMode, setDarkMode }) {
   return (
-    <div style={{ position: "relative", marginBottom: "2rem", height: "100px" }}>
+    <div style={{ position: "relative", marginBottom: "2rem", height: "70px" }}>
       <input
         type="checkbox"
         id="hide-checkbox"

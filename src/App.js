@@ -6,6 +6,7 @@ import Dashboard from "./Dashboard";
 import Login from "./Login";
 import { auth } from "./firebase/firebaseConfig";
 import Statistics from "./Statistics";
+import CancelBookingPage from "./CancelBookingPage";
 
 function App() {
   const [user, setUser] = React.useState(null);
@@ -20,6 +21,8 @@ function App() {
       <Routes>
         <Route path="/" element={<Booking />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/cancel-booking" element={<CancelBookingPage />} /> 
+
         <Route
           path="/dashboard"
           element={
