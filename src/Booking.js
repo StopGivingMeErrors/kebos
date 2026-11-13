@@ -242,7 +242,7 @@ function Booking() {
           alignItems: "center",
         }}
       >
-        <div style={{ fontWeight: "600", fontSize: "1.1rem" }}>Kebos ✂️</div>
+        <div style={{ fontWeight: "600", fontSize: "1.1rem" }}>Kevos ✂️</div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
           <span style={{ fontSize: "0.9rem", opacity: 0.7 }}>{today}</span>

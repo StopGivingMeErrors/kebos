@@ -45,7 +45,7 @@ const layout = ({ title, bodyHtml }) => `
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
             <tr>
               <td style="padding:20px 24px;background:#111827;color:#ffffff;">
-                <div style="font-size:18px;font-weight:700;letter-spacing:0.2px;">Kebos</div>
+                <div style="font-size:18px;font-weight:700;letter-spacing:0.2px;">Kevos</div>
                 <div style="font-size:13px;opacity:0.8;margin-top:4px;">Barber appointments</div>
               </td>
             </tr>
@@ -56,7 +56,7 @@ const layout = ({ title, bodyHtml }) => `
             </tr>
             <tr>
               <td style="padding:16px 24px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;line-height:1.5;">
-                This message was sent by Kebos. If you did not make this request, you can ignore this email.
+                This message was sent by Kevos. If you did not make this request, you can ignore this email.
               </td>
             </tr>
           </table>
@@ -73,7 +73,7 @@ const buildBookingConfirmed = ({ name, date, time, cancelUrl }) => {
   const safeTime = escapeHtml(time);
   const safeCancelUrl = escapeHtml(cancelUrl);
 
-  const subject = "Your Kebos appointment is confirmed";
+  const subject = "Your Kevos appointment is confirmed";
   const text = [
     `Hi ${name},`,
     "",
@@ -84,7 +84,7 @@ const buildBookingConfirmed = ({ name, date, time, cancelUrl }) => {
     cancelUrl ? `Cancel booking: ${cancelUrl}` : "",
     "",
     "See you soon,",
-    "Kebos",
+    "Kevos",
   ]
     .filter(Boolean)
     .join("\n");
@@ -109,7 +109,7 @@ const buildBookingConfirmed = ({ name, date, time, cancelUrl }) => {
              <p style="margin:14px 0 0;font-size:12px;color:#6b7280;line-height:1.5;">If the button does not work, open this link:<br/>${safeCancelUrl}</p>`
           : ""
       }
-      <p style="margin:22px 0 0;font-size:15px;line-height:1.6;">See you soon,<br/><strong>Kebos</strong></p>
+      <p style="margin:22px 0 0;font-size:15px;line-height:1.6;">See you soon,<br/><strong>Kevos</strong></p>
     `,
   });
 
@@ -121,7 +121,7 @@ const buildBookingCancelled = ({ name, date, time }) => {
   const safeDate = escapeHtml(formatAppointmentDate(date));
   const safeTime = escapeHtml(time);
 
-  const subject = "Your Kebos appointment was cancelled";
+  const subject = "Your Kevos appointment was cancelled";
   const text = [
     `Hi ${name},`,
     "",
@@ -129,9 +129,9 @@ const buildBookingCancelled = ({ name, date, time }) => {
     `Date: ${formatAppointmentDate(date)}`,
     `Time: ${time}`,
     "",
-    "You can book another time on the Kebos website whenever you like.",
+    "You can book another time on the Kevos website whenever you like.",
     "",
-    "Kebos",
+    "Kevos",
   ].join("\n");
 
   const html = layout({
@@ -148,8 +148,8 @@ const buildBookingCancelled = ({ name, date, time }) => {
           </td>
         </tr>
       </table>
-      <p style="margin:0;font-size:15px;line-height:1.6;">You can book another time on the Kebos website whenever you like.</p>
-      <p style="margin:22px 0 0;font-size:15px;line-height:1.6;"><strong>Kebos</strong></p>
+      <p style="margin:0;font-size:15px;line-height:1.6;">You can book another time on the Kevos website whenever you like.</p>
+      <p style="margin:22px 0 0;font-size:15px;line-height:1.6;"><strong>Kevos</strong></p>
     `,
   });
 
@@ -247,7 +247,7 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: "Unknown email type" });
     }
 
-    const from = process.env.EMAIL_FROM || "Kebos <bookings@kevos.site>";
+    const from = process.env.EMAIL_FROM || "Kevos <bookings@kevos.site>";
     const replyTo = process.env.EMAIL_REPLY_TO || undefined;
 
     const resend = new Resend(process.env.RESEND_API_KEY);
