@@ -1,0 +1,27 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    match /schedules/{slotId} {
+      allow read: if true;
+      allow create, delete: if isSignedIn();
+      allow update: if isSignedIn()
+        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isBooked']);
+    }
+
+    // Public create + get-by-id (cancel links use booking ID as token).
+    // Public may mark cancelled; only staff can list/delete.
+    match /bookings/{bookingId} {
+      allow create: if true;
+      allow get: if true;
+      allow list: if isSignedIn();
+      allow update: if isSignedIn()
+        || request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'cancelledAt']);
+      allow delete: if isSignedIn();
+    }
+  }
+}

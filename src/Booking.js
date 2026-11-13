@@ -2,13 +2,28 @@ import React, { useState, useEffect } from "react";
 import { db } from "./firebase/firebaseConfig";
 import {
   collection,
-  addDoc,
-  getDocs,
   doc,
+  getDocs,
+  query,
+  where,
   runTransaction,
 } from "firebase/firestore";
 import ThemeToggle from "./ThemeToggle";
-import { v4 as uuidv4 } from "uuid";
+
+const todayISO = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+const makeCancelToken = () => {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `tok_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+};
 
 function Booking() {
   const [name, setName] = useState("");
@@ -18,28 +33,44 @@ function Booking() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   const fetchSlots = async () => {
     try {
-      const snapshot = await getDocs(collection(db, "schedules"));
+      setLoadError("");
+      // Single-field query (auto-indexed). Avoids composite-index failures
+      // and avoids reading the entire historical schedules collection.
+      const q = query(
+        collection(db, "schedules"),
+        where("date", ">=", todayISO())
+      );
+
+      const snapshot = await getDocs(q);
       const now = new Date();
 
       const slots = snapshot.docs
         .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
         .filter((slot) => {
           if (slot.isBooked) return false;
-          const slotDateTime = new Date(`${slot.date}T${slot.time}`);
-          return slotDateTime > now;
+          const slotDateTime = new Date(`${slot.date}T${slot.time}:00`);
+          return !Number.isNaN(slotDateTime.getTime()) && slotDateTime > now;
         })
         .sort(
           (a, b) =>
-            new Date(`${a.date} ${a.time}`) -
-            new Date(`${b.date} ${b.time}`)
+            new Date(`${a.date}T${a.time}:00`) -
+            new Date(`${b.date}T${b.time}:00`)
         );
 
       setAvailableSlots(slots);
     } catch (error) {
       console.error("Error fetching slots:", error);
+      if (error.code === "resource-exhausted") {
+        setLoadError(
+          "Booking system is temporarily unavailable (daily limit reached). Please try again later today."
+        );
+      } else {
+        setLoadError("Could not load available slots. Please refresh.");
+      }
     } finally {
       setLoading(false);
     }
@@ -70,6 +101,10 @@ function Booking() {
 
     try {
       const slotRef = doc(db, "schedules", selectedSlot);
+      // Use cancel token as booking document ID so cancel links can getDoc
+      // without listing the bookings collection or needing a cancelTokens collection.
+      const cancelToken = makeCancelToken();
+      const bookingRef = doc(db, "bookings", cancelToken);
 
       const bookingData = await runTransaction(db, async (transaction) => {
         const slotDoc = await transaction.get(slotRef);
@@ -81,34 +116,31 @@ function Booking() {
         if (slotData.isBooked) throw new Error("SLOT_TAKEN");
 
         transaction.update(slotRef, { isBooked: true });
+        transaction.set(bookingRef, {
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          slotId: selectedSlot,
+          date: slotData.date,
+          time: slotData.time,
+          timestamp: new Date(),
+          cancelToken,
+          status: "active",
+        });
 
         return slotData;
       });
 
-      const cancelToken = uuidv4();
-
-      await addDoc(collection(db, "bookings"), {
-        name,
-        email,
-        slotId: selectedSlot,
-        date: bookingData.date,
-        time: bookingData.time,
-        timestamp: new Date(),
-        cancelToken,
-        status: "active",
-      });
-
-      const cancelUrl = `https://www.kebos.online/cancel-booking?token=${cancelToken}`;
+      const cancelUrl = `${window.location.origin}/cancel-booking?token=${cancelToken}`;
 
       fetch("/api/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          to: email,
+          to: email.trim().toLowerCase(),
           subject: "Tsaat to rantevou ekleise brat 💈",
           html: `
             <h2>Your appointment is confirmed!</h2>
-            <p>Hi ${name},</p>
+            <p>Hi ${name.trim()},</p>
             <p><strong>Date:</strong> ${bookingData.date}</p>
             <p><strong>Time:</strong> ${bookingData.time}</p>
 
@@ -144,8 +176,15 @@ function Booking() {
         await fetchSlots();
       } else if (error.message === "SLOT_NOT_FOUND") {
         alert("Slot not found");
+        await fetchSlots();
+      } else if (error.code === "resource-exhausted") {
+        alert(
+          "Booking system hit its daily read limit. Please try again after midnight US Pacific time."
+        );
+      } else if (error.code === "permission-denied") {
+        alert("Booking is blocked by security rules. Please contact the shop.");
       } else {
-        alert("Booking failed");
+        alert(`Booking failed: ${error.code || error.message || "unknown error"}`);
       }
     } finally {
       setSubmitting(false);
@@ -160,15 +199,15 @@ function Booking() {
     month: "short",
   });
 
-  const inputStyle = (darkMode) => ({
+  const inputStyle = (isDark) => ({
     width: "100%",
     padding: "12px",
     borderRadius: "10px",
     border: "1px solid rgba(0,0,0,0.1)",
     outline: "none",
     fontSize: "0.95rem",
-    background: darkMode ? "#1a1a1a" : "#fff",
-    color: darkMode ? "#fff" : "#000",
+    background: isDark ? "#1a1a1a" : "#fff",
+    color: isDark ? "#fff" : "#000",
   });
 
   return (
@@ -179,7 +218,6 @@ function Booking() {
         color: darkMode ? "#fff" : "#000",
       }}
     >
-      {/* 🍎 Navbar */}
       <div
         style={{
           position: "sticky",
@@ -199,22 +237,29 @@ function Booking() {
           alignItems: "center",
         }}
       >
-        <div style={{ fontWeight: "600", fontSize: "1.1rem" }}>
-          Kebos ✂️
-        </div>
+        <div style={{ fontWeight: "600", fontSize: "1.1rem" }}>Kebos ✂️</div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-          <span style={{ fontSize: "0.9rem", opacity: 0.7 }}>
-            {today}
-          </span>
-
-          {/* ✅ YOUR ORIGINAL BUTTON RESTORED */}
+          <span style={{ fontSize: "0.9rem", opacity: 0.7 }}>{today}</span>
           <ThemeToggle darkMode={darkMode} setDarkMode={setDarkMode} />
         </div>
       </div>
 
-      {/* Page */}
       <div style={{ maxWidth: "420px", margin: "40px auto", padding: "0 16px" }}>
+        {loadError && (
+          <p
+            style={{
+              background: "#fef2f2",
+              color: "#b91c1c",
+              padding: "12px",
+              borderRadius: "10px",
+              marginBottom: "12px",
+            }}
+          >
+            {loadError}
+          </p>
+        )}
+
         <form
           onSubmit={handleBooking}
           style={{ display: "flex", flexDirection: "column", gap: "12px" }}
@@ -247,12 +292,15 @@ function Booking() {
           </select>
 
           <button
-            disabled={submitting}
+            disabled={submitting || !!loadError || availableSlots.length === 0}
             style={{
               padding: "12px",
               borderRadius: "10px",
               border: "none",
-              background: submitting ? "#666" : "#0071e3",
+              background:
+                submitting || loadError || availableSlots.length === 0
+                  ? "#666"
+                  : "#0071e3",
               color: "white",
               fontWeight: "600",
               cursor: "pointer",

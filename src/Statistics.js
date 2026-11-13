@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { auth, db } from "./firebase/firebaseConfig";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, getDocs, query, where } from "firebase/firestore";
 import ThemeToggle from "./ThemeToggle";
 import {
   BarChart,
@@ -15,6 +15,15 @@ import {
   LineChart,
   Line,
 } from "recharts";
+
+const monthsAgoISO = (months) => {
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
 
 const Statistics = () => {
   const navigate = useNavigate();
@@ -31,23 +40,33 @@ const Statistics = () => {
     return unsubscribe;
   }, [navigate]);
 
-  // Real-time listener for bookings
+  // One-shot load of recent bookings (no live listener over full history)
   useEffect(() => {
-    const unsubscribe = onSnapshot(
-      collection(db, "bookings"),
-      (snapshot) => {
-        const fetchedBookings = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setBookings(fetchedBookings);
-      },
-      (error) => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const q = query(
+          collection(db, "bookings"),
+          where("date", ">=", monthsAgoISO(12))
+        );
+        const snapshot = await getDocs(q);
+        if (cancelled) return;
+        setBookings(
+          snapshot.docs.map((docSnap) => ({
+            id: docSnap.id,
+            ...docSnap.data(),
+          }))
+        );
+      } catch (error) {
         console.error("Error fetching bookings:", error);
       }
-    );
+    };
 
-    return () => unsubscribe();
+    load();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Process bookings by day

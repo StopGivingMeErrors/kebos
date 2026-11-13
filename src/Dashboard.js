@@ -19,6 +19,14 @@ import {
   getDoc,
 } from "firebase/firestore";
 
+const todayISO = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 const groupBookingsByDate = (list) => {
   const groups = {};
   list.forEach((b) => {
@@ -101,25 +109,28 @@ const Dashboard = () => {
     }
   };
 
-  // Real-time listener for slots (eliminates need for fetchData)
+  // Real-time listener for upcoming slots only (avoids reading entire history)
   useEffect(() => {
-    const unsubscribe = onSnapshot(
+    const slotsQuery = query(
       collection(db, "schedules"),
+      where("date", ">=", todayISO())
+    );
+
+    const unsubscribe = onSnapshot(
+      slotsQuery,
       (snapshot) => {
         const now = new Date();
 
         const fetchedSlots = snapshot.docs
-          .map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
+          .map((docSnap) => ({
+            id: docSnap.id,
+            ...docSnap.data(),
           }))
           .filter((slot) => {
-            // Only show future slots
             const slotDateTime = parseDateTime(slot.date, slot.time);
             return slotDateTime > now;
           });
 
-        // Sort slots chronologically by appointment datetime (ascending)
         fetchedSlots.sort((a, b) => {
           const dateTimeA = parseDateTime(a.date, a.time).getTime();
           const dateTimeB = parseDateTime(b.date, b.time).getTime();
@@ -130,28 +141,37 @@ const Dashboard = () => {
       },
       (error) => {
         console.error("Error fetching slots:", error);
-        alert("Failed to load schedule slots");
+        if (error.code === "resource-exhausted") {
+          alert(
+            "Firestore daily quota exceeded. Enable billing in Firebase or wait until midnight US Pacific."
+          );
+        } else {
+          alert("Failed to load schedule slots");
+        }
       }
     );
 
     return () => unsubscribe();
   }, []);
 
-  // Real-time listener for bookings
+  // Real-time listener for upcoming bookings only (not all ~4k historical docs)
   useEffect(() => {
-    const unsubscribe = onSnapshot(
+    const bookingsQuery = query(
       collection(db, "bookings"),
+      where("date", ">=", todayISO())
+    );
+
+    const unsubscribe = onSnapshot(
+      bookingsQuery,
       (snapshot) => {
         const now = new Date();
 
         const fetchedBookings = snapshot.docs
-          .map((doc) => {
-            const raw = doc.data();
+          .map((docSnap) => {
+            const raw = docSnap.data();
 
-            // Convert Firestore Timestamp to JS Date if necessary
             let createdAt = null;
             if (raw.timestamp) {
-              // Firestore stores Timestamp objects that have .toDate()
               createdAt =
                 typeof raw.timestamp.toDate === "function"
                   ? raw.timestamp.toDate()
@@ -159,18 +179,17 @@ const Dashboard = () => {
             }
 
             return {
-              id: doc.id,
-              createdAt, // may be null if timestamp missing
+              id: docSnap.id,
+              createdAt,
               ...raw,
             };
           })
           .filter((booking) => {
-            // Only show future/today bookings (same logic as before)
+            if (booking.status === "cancelled") return false;
             const bookingDateTime = parseDateTime(booking.date, booking.time);
             return bookingDateTime > now;
           });
 
-        // Sort by upcoming appointment (soonest first)
         fetchedBookings.sort((a, b) => {
           const aDt = parseDateTime(a.date, a.time).getTime();
           const bDt = parseDateTime(b.date, b.time).getTime();
@@ -181,7 +200,13 @@ const Dashboard = () => {
       },
       (error) => {
         console.error("Error fetching bookings:", error);
-        alert("Failed to load bookings");
+        if (error.code === "resource-exhausted") {
+          alert(
+            "Firestore daily quota exceeded. Enable billing in Firebase or wait until midnight US Pacific."
+          );
+        } else {
+          alert("Failed to load bookings");
+        }
       }
     );
 
@@ -282,8 +307,19 @@ const Dashboard = () => {
     setLoading(true);
 
     try {
-      // Fetch current slots from Firestore
-      const snapshot = await getDocs(collection(db, "schedules"));
+      // Only load slots in the date range being generated (not entire history)
+      const rangeStart = date;
+      const rangeEndDate = new Date(date);
+      rangeEndDate.setDate(rangeEndDate.getDate() + daysAhead);
+      const rangeEnd = rangeEndDate.toISOString().split("T")[0];
+
+      const snapshot = await getDocs(
+        query(
+          collection(db, "schedules"),
+          where("date", ">=", rangeStart),
+          where("date", "<", rangeEnd)
+        )
+      );
 
       // Use Set for O(1) lookup instead of O(n)
       const existingSlotKeys = new Set(
@@ -357,32 +393,32 @@ const Dashboard = () => {
     setLoading(true);
 
     try {
-      // Check if booking still exists
       const bookingRef = doc(db, "bookings", booking.id);
       const bookingSnap = await getDoc(bookingRef);
-      
+
       if (!bookingSnap.exists()) {
         alert("This booking has already been cancelled.");
         setLoading(false);
         return;
       }
 
-      // Query Firestore directly instead of relying on state
-      const slotsQuery = query(
-        collection(db, "schedules"),
-        where("date", "==", booking.date),
-        where("time", "==", booking.time)
-      );
+      const live = bookingSnap.data();
+      const slotId = live.slotId || booking.slotId;
 
-      const querySnapshot = await getDocs(slotsQuery);
-
-      if (!querySnapshot.empty) {
-        const slotDoc = querySnapshot.docs[0];
-        const slotRef = doc(db, "schedules", slotDoc.id);
-        await updateDoc(slotRef, { isBooked: false });
+      if (slotId) {
+        await updateDoc(doc(db, "schedules", slotId), { isBooked: false });
+      } else {
+        const slotsQuery = query(
+          collection(db, "schedules"),
+          where("date", "==", booking.date),
+          where("time", "==", booking.time)
+        );
+        const querySnapshot = await getDocs(slotsQuery);
+        if (!querySnapshot.empty) {
+          await updateDoc(querySnapshot.docs[0].ref, { isBooked: false });
+        }
       }
 
-      // Send cancellation email
       try {
         const response = await fetch("/api/send-email", {
           method: "POST",
@@ -402,15 +438,12 @@ const Dashboard = () => {
         const data = await response.json();
 
         if (!response.ok) {
-          console.error("❌ Email failed:", data);
-        } else {
-          console.log("✅ Email sent!", data);
+          console.error("Email failed:", data);
         }
       } catch (emailError) {
-        console.error("❌ Email error:", emailError);
+        console.error("Email error:", emailError);
       }
 
-      // Delete booking
       await deleteDoc(bookingRef);
 
       alert(`Booking for ${booking.name} has been cancelled`);
@@ -461,7 +494,10 @@ const Dashboard = () => {
     setLoading(true);
 
     try {
-      const snapshot = await getDocs(collection(db, "schedules"));
+      // Only clear upcoming slots — avoids reading/deleting entire history
+      const snapshot = await getDocs(
+        query(collection(db, "schedules"), where("date", ">=", todayISO()))
+      );
 
       const deletePromises = snapshot.docs.map((d) =>
         deleteDoc(doc(db, "schedules", d.id))
@@ -469,7 +505,7 @@ const Dashboard = () => {
 
       await Promise.all(deletePromises);
 
-      alert("All slots cleared successfully");
+      alert(`Cleared ${snapshot.size} upcoming slots`);
     } catch (error) {
       console.error("Error clearing slots:", error);
       alert("Failed to clear slots");
