@@ -2,8 +2,13 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { auth, db } from "./firebase/firebaseConfig";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import { collection, getDocs } from "firebase/firestore";
 import ThemeToggle from "./ThemeToggle";
+import {
+  formatAppointmentDateShort,
+  formatMonthLabel,
+} from "./dateFormat";
+import { useToast } from "./ToastContext";
 import {
   BarChart,
   Bar,
@@ -16,86 +21,140 @@ import {
   Line,
 } from "recharts";
 
-const monthsAgoISO = (months) => {
-  const d = new Date();
-  d.setMonth(d.getMonth() - months);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+const CACHE_KEY = "kebos_stats_cache_v1";
+
+const readCache = () => {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.bookings)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const writeCache = (bookings) => {
+  const payload = {
+    fetchedAt: new Date().toISOString(),
+    total: bookings.length,
+    // Slim records only — enough for charts, keeps localStorage small
+    bookings: bookings.map((b) => ({
+      date: b.date || "",
+      status: b.status || "active",
+    })),
+  };
+  localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
+  return payload;
 };
 
 const Statistics = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const [bookings, setBookings] = useState([]);
   const [darkMode, setDarkMode] = useState(false);
-  const [loadingStats, setLoadingStats] = useState(true);
+  const [loadingStats, setLoadingStats] = useState(false);
+  const [cacheMeta, setCacheMeta] = useState(null);
+  const [fromCache, setFromCache] = useState(false);
 
-  // Redirect if not logged in
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((user) => {
-      if (!user) {
-        navigate("/login");
-      }
+      if (!user) navigate("/login");
     });
     return unsubscribe;
   }, [navigate]);
 
-  // One-shot load — last 90 days only (enough for day chart + recent months)
-  const loadStats = async () => {
+  const loadStatsFromServer = async ({ notify = true } = {}) => {
     setLoadingStats(true);
     try {
-      const q = query(
-        collection(db, "bookings"),
-        where("date", ">=", monthsAgoISO(3))
-      );
-      const snapshot = await getDocs(q);
-      setBookings(
-        snapshot.docs.map((docSnap) => ({
-          id: docSnap.id,
-          ...docSnap.data(),
-        }))
-      );
+      // Full history once, then cached locally — avoids re-reading ~4k docs every visit
+      const snapshot = await getDocs(collection(db, "bookings"));
+      const fetched = snapshot.docs.map((docSnap) => {
+        const data = docSnap.data();
+        return {
+          date: data.date || "",
+          status: data.status || "active",
+        };
+      });
+      const cached = writeCache(fetched);
+      setBookings(cached.bookings);
+      setCacheMeta(cached.fetchedAt);
+      setFromCache(false);
+      if (notify) toast.success("Statistics updated from server.");
     } catch (error) {
       console.error("Error fetching bookings:", error);
+      if (error.code === "resource-exhausted") {
+        toast.error(
+          "Daily limit reached. Showing cached stats if available."
+        );
+      } else {
+        toast.error("Failed to load statistics from server.");
+      }
     } finally {
       setLoadingStats(false);
     }
   };
 
+  // Show cache immediately; only hit Firestore when empty or user refreshes
   useEffect(() => {
-    loadStats();
+    const cached = readCache();
+    if (cached) {
+      setBookings(cached.bookings);
+      setCacheMeta(cached.fetchedAt);
+      setFromCache(true);
+      setLoadingStats(false);
+    } else {
+      loadStatsFromServer({ notify: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Process bookings by day
   const bookingsByDay = useMemo(() => {
     const counts = {};
     bookings.forEach((booking) => {
-      const date = booking.date;
-      counts[date] = (counts[date] || 0) + 1;
+      if (!booking.date) return;
+      counts[booking.date] = (counts[booking.date] || 0) + 1;
     });
 
     return Object.entries(counts)
-      .map(([date, count]) => ({ date, count }))
+      .map(([date, count]) => ({
+        date,
+        label: formatAppointmentDateShort(date),
+        count,
+      }))
       .sort((a, b) => new Date(a.date) - new Date(b.date))
-      .slice(-30); // Last 30 days
+      .slice(-30);
   }, [bookings]);
 
-  // Process bookings by month
   const bookingsByMonth = useMemo(() => {
     const counts = {};
     bookings.forEach((booking) => {
-      const month = booking.date.substring(0, 7); // YYYY-MM
+      if (!booking.date || booking.date.length < 7) return;
+      const month = booking.date.substring(0, 7);
       counts[month] = (counts[month] || 0) + 1;
     });
 
     return Object.entries(counts)
-      .map(([month, count]) => ({ month, count }))
+      .map(([month, count]) => ({
+        month,
+        label: formatMonthLabel(month),
+        count,
+      }))
       .sort((a, b) => a.month.localeCompare(b.month))
-      .slice(-12); // Last 12 months
+      .slice(-12);
   }, [bookings]);
 
   const totalBookings = bookings.length;
+  const cacheLabel = cacheMeta
+    ? new Date(cacheMeta).toLocaleString("en-GB", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
 
   return (
     <div
@@ -122,7 +181,14 @@ const Statistics = () => {
         <ThemeToggle darkMode={darkMode} setDarkMode={setDarkMode} />
       </div>
 
-      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.5rem" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: "0.5rem",
+          flexWrap: "wrap",
+          marginBottom: "0.5rem",
+        }}
+      >
         <button
           type="button"
           onClick={() => navigate("/dashboard")}
@@ -139,7 +205,7 @@ const Statistics = () => {
         </button>
         <button
           type="button"
-          onClick={loadStats}
+          onClick={() => loadStatsFromServer({ notify: true })}
           disabled={loadingStats}
           style={{
             padding: "0.5rem 1rem",
@@ -150,11 +216,17 @@ const Statistics = () => {
             cursor: loadingStats ? "not-allowed" : "pointer",
           }}
         >
-          {loadingStats ? "Loading…" : "Refresh"}
+          {loadingStats ? "Loading from server…" : "Refresh from server"}
         </button>
       </div>
 
-      {/* Summary */}
+      {cacheLabel && (
+        <p style={{ margin: "0 0 1.5rem 0", fontSize: "0.85rem", opacity: 0.7 }}>
+          {fromCache ? "Showing cached data" : "Fresh from server"} · last
+          updated {cacheLabel}
+        </p>
+      )}
+
       <div
         style={{
           background: darkMode ? "#2a2a2a" : "#f3f4f6",
@@ -174,11 +246,10 @@ const Statistics = () => {
           {totalBookings}
         </h2>
         <p style={{ margin: 0, fontSize: "1.2rem", opacity: 0.8 }}>
-          Bookings (last 90 days)
+          Total bookings (all time)
         </p>
       </div>
 
-      {/* Bookings per Day Chart */}
       <div
         style={{
           background: darkMode ? "#181818" : "#ffffff",
@@ -188,18 +259,18 @@ const Statistics = () => {
         }}
       >
         <h3 style={{ marginBottom: "1rem" }}>
-          Bookings per Day (Last 30 Days)
+          Bookings per Day (Last 30 Days with data)
         </h3>
         {bookingsByDay.length > 0 ? (
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={bookingsByDay}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
-                dataKey="date"
+                dataKey="label"
                 angle={-45}
                 textAnchor="end"
-                height={80}
-                style={{ fontSize: "0.85rem" }}
+                height={90}
+                style={{ fontSize: "0.75rem" }}
               />
               <YAxis />
               <Tooltip
@@ -208,18 +279,20 @@ const Statistics = () => {
                   border: "1px solid #ccc",
                   borderRadius: "6px",
                 }}
+                labelFormatter={(_, payload) =>
+                  payload?.[0]?.payload?.label || ""
+                }
               />
               <Bar dataKey="count" fill="#2563eb" />
             </BarChart>
           </ResponsiveContainer>
         ) : (
           <p style={{ textAlign: "center", opacity: 0.6, padding: "2rem" }}>
-            No booking data available
+            {loadingStats ? "Loading…" : "No booking data available"}
           </p>
         )}
       </div>
 
-      {/* Bookings per Month Chart */}
       <div
         style={{
           background: darkMode ? "#181818" : "#ffffff",
@@ -234,7 +307,7 @@ const Statistics = () => {
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={bookingsByMonth}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="month" style={{ fontSize: "0.85rem" }} />
+              <XAxis dataKey="label" style={{ fontSize: "0.85rem" }} />
               <YAxis />
               <Tooltip
                 contentStyle={{
@@ -254,7 +327,7 @@ const Statistics = () => {
           </ResponsiveContainer>
         ) : (
           <p style={{ textAlign: "center", opacity: 0.6, padding: "2rem" }}>
-            No booking data available
+            {loadingStats ? "Loading…" : "No booking data available"}
           </p>
         )}
       </div>

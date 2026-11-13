@@ -7,6 +7,7 @@ import Login from "./Login";
 import { auth } from "./firebase/firebaseConfig";
 import Statistics from "./Statistics";
 import CancelBookingPage from "./CancelBookingPage";
+import { ToastProvider } from "./ToastContext";
 
 function App() {
   const [user, setUser] = React.useState(null);
@@ -17,24 +18,24 @@ function App() {
   }, []);
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Booking />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/cancel-booking" element={<CancelBookingPage />} /> 
+    <ToastProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Booking />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/cancel-booking" element={<CancelBookingPage />} />
 
-        <Route
-          path="/dashboard"
-          element={
-            user ? <Dashboard /> : <Navigate to="/login" />
-          }
-        />
-        <Route
-          path="/statistics"
-          element={user ? <Statistics /> : <Navigate to="/login" />}
+          <Route
+            path="/dashboard"
+            element={user ? <Dashboard /> : <Navigate to="/login" />}
           />
-      </Routes>
-    </BrowserRouter>
+          <Route
+            path="/statistics"
+            element={user ? <Statistics /> : <Navigate to="/login" />}
+          />
+        </Routes>
+      </BrowserRouter>
+    </ToastProvider>
   );
 }
 

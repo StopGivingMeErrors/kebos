@@ -3,19 +3,22 @@ import React, { useState } from "react";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "./firebase/firebaseConfig";
 import { useNavigate } from "react-router-dom";
+import { useToast } from "./ToastContext";
 
 function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const navigate = useNavigate();
+  const toast = useToast();
 
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      navigate("/dashboard"); // redirect to dashboard after login
+      toast.success("Welcome back.");
+      navigate("/dashboard");
     } catch (error) {
-      alert("Invalid login credentials");
+      toast.error("Invalid email or password.");
       console.error("Login error:", error);
     }
   };

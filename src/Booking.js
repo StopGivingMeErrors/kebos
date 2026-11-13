@@ -9,6 +9,9 @@ import {
   runTransaction,
 } from "firebase/firestore";
 import ThemeToggle from "./ThemeToggle";
+import { formatAppointmentSlot } from "./dateFormat";
+import { useToast } from "./ToastContext";
+import { sendAppEmail } from "./sendEmail";
 
 const todayISO = () => {
   const d = new Date();
@@ -26,6 +29,7 @@ const makeCancelToken = () => {
 };
 
 function Booking() {
+  const toast = useToast();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [selectedSlot, setSelectedSlot] = useState("");
@@ -96,16 +100,19 @@ function Booking() {
     if (submitting) return;
 
     if (!name || !email || !selectedSlot) {
-      return alert("Fill all fields");
+      toast.warning("Please fill in your name, email, and choose a slot.");
+      return;
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      return alert("Invalid email");
+      toast.warning("Please enter a valid email address.");
+      return;
     }
 
     if (name.trim().length < 2) {
-      return alert("Invalid name");
+      toast.warning("Please enter your full name.");
+      return;
     }
 
     setSubmitting(true);
@@ -143,36 +150,23 @@ function Booking() {
 
       const cancelUrl = `${window.location.origin}/cancel-booking?token=${cancelToken}`;
 
-      fetch("/api/send-email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to: email.trim().toLowerCase(),
-          subject: "Tsaat to rantevou ekleise brat 💈",
-          html: `
-            <h2>Your appointment is confirmed!</h2>
-            <p>Hi ${name.trim()},</p>
-            <p><strong>Date:</strong> ${bookingData.date}</p>
-            <p><strong>Time:</strong> ${bookingData.time}</p>
+      const emailResult = await sendAppEmail({
+        type: "booking_confirmed",
+        to: email.trim().toLowerCase(),
+        name: name.trim(),
+        date: bookingData.date,
+        time: bookingData.time,
+        cancelUrl,
+      });
 
-            <br/>
-
-            <a href="${cancelUrl}" style="
-              display:inline-block;
-              padding:14px 28px;
-              background:#ef4444;
-              color:white;
-              border-radius:8px;
-              font-weight:bold;
-              text-decoration:none;
-            ">
-              Cancel Booking
-            </a>
-          `,
-        }),
-      }).catch(console.error);
-
-      alert("Arakse bro mou to rantevou ekleise!");
+      if (emailResult.ok) {
+        toast.success("Your appointment is confirmed. A confirmation email is on the way.");
+      } else {
+        console.error("Confirmation email failed:", emailResult.error);
+        toast.warning(
+          "Your appointment is confirmed, but the confirmation email could not be sent."
+        );
+      }
 
       setName("");
       setEmail("");
@@ -183,19 +177,19 @@ function Booking() {
       console.error(error);
 
       if (error.message === "SLOT_TAKEN") {
-        alert("Slot already taken 😭");
+        toast.error("That slot was just taken. Please choose another time.");
         await fetchSlots();
       } else if (error.message === "SLOT_NOT_FOUND") {
-        alert("Slot not found");
+        toast.error("That slot is no longer available. Please choose another.");
         await fetchSlots();
       } else if (error.code === "resource-exhausted") {
-        alert(
-          "Booking system hit its daily read limit. Please try again after midnight US Pacific time."
+        toast.error(
+          "Booking is temporarily unavailable (daily limit reached). Please try again later today."
         );
       } else if (error.code === "permission-denied") {
-        alert("Booking is blocked by security rules. Please contact the shop.");
+        toast.error("Booking could not be completed. Please contact the shop.");
       } else {
-        alert(`Booking failed: ${error.code || error.message || "unknown error"}`);
+        toast.error("Booking failed. Please try again in a moment.");
       }
     } finally {
       setSubmitting(false);
@@ -297,7 +291,7 @@ function Booking() {
             <option value="">Select slot</option>
             {availableSlots.map((slot) => (
               <option key={slot.id} value={slot.id}>
-                {slot.date} – {slot.time}
+                {formatAppointmentSlot(slot.date, slot.time)}
               </option>
             ))}
           </select>

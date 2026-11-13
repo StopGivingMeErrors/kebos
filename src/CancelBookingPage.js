@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { db } from "./firebase/firebaseConfig";
 import { doc, getDoc, deleteDoc, updateDoc } from "firebase/firestore";
+import { formatAppointmentDate } from "./dateFormat";
 
 function CancelBookingPage() {
   const [searchParams] = useSearchParams();
@@ -153,7 +154,7 @@ function CancelBookingPage() {
               Cancel appointment for <strong>{bookingInfo.name}</strong>?
             </p>
             <p>
-              <strong>Date:</strong> {bookingInfo.date}
+              <strong>Date:</strong> {formatAppointmentDate(bookingInfo.date)}
               <br />
               <strong>Time:</strong> {bookingInfo.time}
             </p>

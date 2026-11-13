@@ -5,6 +5,9 @@ import { useNavigate } from "react-router-dom";
 import { auth, db } from "./firebase/firebaseConfig";
 import { signOut } from "firebase/auth";
 import ThemeToggle from "./ThemeToggle";
+import { formatAppointmentDate } from "./dateFormat";
+import { useToast } from "./ToastContext";
+import { sendAppEmail } from "./sendEmail";
 import "./Dashboard.css";
 import {
   collection,
@@ -41,21 +44,9 @@ const groupBookingsByDate = (list) => {
     }));
 };
 
-const formatGroupDate = (dateStr) => {
-  try {
-    return new Date(`${dateStr}T12:00:00`).toLocaleDateString("en-GB", {
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
-  } catch {
-    return dateStr;
-  }
-};
-
 const Dashboard = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
@@ -176,16 +167,18 @@ const Dashboard = () => {
     } catch (error) {
       console.error("Error loading dashboard:", error);
       if (error.code === "resource-exhausted") {
-        alert(
-          "Firestore daily quota exceeded. Wait until midnight US Pacific, or enable Blaze."
+        toast.error(
+          "Daily limit reached. Wait until later today, then refresh."
         );
       } else {
-        alert("Failed to load dashboard data");
+        toast.error("Failed to load dashboard data.");
       }
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
+    // toast is stable enough for UI feedback; omit from deps to avoid reload loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auth gate + one-shot load (no realtime listeners — saves Spark read quota)
@@ -211,10 +204,15 @@ const Dashboard = () => {
 
   // One-time style cleanup: remove past schedule docs so collections stay small
   const cleanupPastSchedules = async () => {
-    const confirmCleanup = window.confirm(
-      "Delete all PAST schedule slots (before today)?\nThis frees storage and prevents accidental full-collection scans.\nUpcoming slots are kept."
+    const ok = await toast.confirm(
+      "Delete all past schedule slots (before today)? Upcoming slots are kept.",
+      {
+        title: "Clean past slots",
+        confirmLabel: "Delete past slots",
+        danger: true,
+      }
     );
-    if (!confirmCleanup) return;
+    if (!ok) return;
 
     setLoading(true);
     try {
@@ -222,15 +220,15 @@ const Dashboard = () => {
         query(collection(db, "schedules"), where("date", "<", todayISO()))
       );
       if (snapshot.empty) {
-        alert("No past schedule slots to clean up.");
+        toast.info("No past schedule slots to clean up.");
         return;
       }
       await deleteDocsInBatches(snapshot.docs);
-      alert(`Deleted ${snapshot.size} past schedule slots.`);
+      toast.success(`Deleted ${snapshot.size} past schedule slots.`);
       await loadDashboardData({ silent: true });
     } catch (error) {
       console.error("Cleanup failed:", error);
-      alert("Failed to clean up past slots.");
+      toast.error("Failed to clean up past slots.");
     } finally {
       setLoading(false);
     }
@@ -270,18 +268,20 @@ const Dashboard = () => {
       navigate("/login");
     } catch (error) {
       console.error("Logout error:", error);
-      alert("Failed to logout");
+      toast.error("Failed to log out.");
     }
   };
 
   // Add multiple slots based on start-end range
   const addRangeSlots = async () => {
     if (!date || !startTime || !endTime) {
-      return alert("Fill date and time range");
+      toast.warning("Please fill date and time range.");
+      return;
     }
 
     if (daysAhead < 1 || daysAhead > 10) {
-      return alert("You can only generate between 1 and 10 days");
+      toast.warning("You can only generate between 1 and 10 days.");
+      return;
     }
 
     // Check if date is in the past
@@ -290,7 +290,8 @@ const Dashboard = () => {
     today.setHours(0, 0, 0, 0);
 
     if (selectedDate < today) {
-      return alert("Cannot create slots in the past!");
+      toast.warning("Cannot create slots in the past.");
+      return;
     }
 
     const duration = 15;
@@ -301,7 +302,8 @@ const Dashboard = () => {
     const endMinutes = endH * 60 + endM;
 
     if (startMinutes >= endMinutes) {
-      return alert("End time must be after start time");
+      toast.warning("End time must be after start time.");
+      return;
     }
 
     setLoading(true);
@@ -363,7 +365,7 @@ const Dashboard = () => {
       }
 
       if (promises.length === 0) {
-        alert("No new slots to add - all selected slots already exist!");
+        toast.info("No new slots to add — those times already exist.");
         setLoading(false);
         return;
       }
@@ -376,20 +378,26 @@ const Dashboard = () => {
       setEndTime("");
       setDaysAhead(1);
 
-      alert(`${promises.length} slots generated successfully!`);
+      toast.success(`${promises.length} slots generated successfully.`);
       await loadDashboardData({ silent: true });
     } catch (err) {
       console.error("Error adding slots:", err);
-      alert("Failed to generate slots. Please try again.");
+      toast.error("Failed to generate slots. Please try again.");
     } finally {
       setLoading(false);
     }
   };
 
   const cancelBooking = async (booking) => {
-    if (!window.confirm(`Cancel booking for ${booking.name}?`)) {
-      return;
-    }
+    const ok = await toast.confirm(
+      `Cancel the appointment for ${booking.name}?`,
+      {
+        title: "Cancel booking",
+        confirmLabel: "Cancel booking",
+        danger: true,
+      }
+    );
+    if (!ok) return;
 
     setLoading(true);
 
@@ -398,7 +406,7 @@ const Dashboard = () => {
       const bookingSnap = await getDoc(bookingRef);
 
       if (!bookingSnap.exists()) {
-        alert("This booking has already been cancelled.");
+        toast.info("This booking has already been cancelled.");
         setLoading(false);
         return;
       }
@@ -420,38 +428,31 @@ const Dashboard = () => {
         }
       }
 
-      try {
-        const response = await fetch("/api/send-email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            to: booking.email,
-            subject: "Sorry bratan den prolavainw re💔",
-            html: `
-              <h2>Your appointment has been cancelled</h2>
-              <p>Hi ${booking.name},</p>
-              <p>Your appointment on <strong>${booking.date}</strong> at <strong>${booking.time}</strong> has been cancelled.</p>
-              <p>Ama thes kleise gia allh mera </p>
-            `,
-          }),
-        });
+      const emailResult = await sendAppEmail({
+        type: "booking_cancelled",
+        to: booking.email,
+        name: booking.name,
+        date: booking.date,
+        time: booking.time,
+      });
 
-        const data = await response.json();
-
-        if (!response.ok) {
-          console.error("Email failed:", data);
-        }
-      } catch (emailError) {
-        console.error("Email error:", emailError);
+      if (!emailResult.ok) {
+        console.error("Cancellation email failed:", emailResult.error);
       }
 
       await deleteDoc(bookingRef);
 
-      alert(`Booking for ${booking.name} has been cancelled`);
+      if (emailResult.ok) {
+        toast.success(`Booking for ${booking.name} cancelled. Email sent.`);
+      } else {
+        toast.warning(
+          `Booking for ${booking.name} cancelled, but the email could not be sent.`
+        );
+      }
       await loadDashboardData({ silent: true });
     } catch (err) {
       console.error("Failed to cancel booking:", err);
-      alert("Failed to cancel booking. Please try again.");
+      toast.error("Failed to cancel booking. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -465,34 +466,44 @@ const Dashboard = () => {
       const slotSnap = await getDoc(slotRef);
 
       if (!slotSnap.exists()) {
-        return alert("Slot not found");
+        toast.error("Slot not found.");
+        return;
       }
 
       const slotData = slotSnap.data();
 
       if (slotData.isBooked) {
-        return alert("Cannot delete a booked slot! Cancel the booking first.");
-      }
-
-      if (!window.confirm("Delete this slot?")) {
+        toast.warning("Cannot delete a booked slot. Cancel the booking first.");
         return;
       }
 
+      const ok = await toast.confirm("Delete this schedule slot?", {
+        title: "Delete slot",
+        confirmLabel: "Delete",
+        danger: true,
+      });
+      if (!ok) return;
+
       await deleteDoc(slotRef);
+      toast.success("Slot deleted.");
       await loadDashboardData({ silent: true });
     } catch (error) {
       console.error("Error deleting slot:", error);
-      alert("Failed to delete slot");
+      toast.error("Failed to delete slot.");
     }
   };
 
   // Clear upcoming schedule slots
   const clearAllSlots = async () => {
-    const confirmDelete = window.confirm(
-      "Delete ALL upcoming schedule slots?\nThis cannot be undone."
+    const ok = await toast.confirm(
+      "Delete all upcoming schedule slots? This cannot be undone.",
+      {
+        title: "Clear upcoming slots",
+        confirmLabel: "Clear all",
+        danger: true,
+      }
     );
-
-    if (!confirmDelete) return;
+    if (!ok) return;
 
     setLoading(true);
 
@@ -503,11 +514,11 @@ const Dashboard = () => {
 
       await deleteDocsInBatches(snapshot.docs);
 
-      alert(`Cleared ${snapshot.size} upcoming slots`);
+      toast.success(`Cleared ${snapshot.size} upcoming slots.`);
       await loadDashboardData({ silent: true });
     } catch (error) {
       console.error("Error clearing slots:", error);
-      alert("Failed to clear slots");
+      toast.error("Failed to clear slots.");
     } finally {
       setLoading(false);
     }
@@ -786,7 +797,7 @@ const Dashboard = () => {
                       padding: "8px",
                     }}
                   >
-                    {slot.date}
+                    {formatAppointmentDate(slot.date)}
                   </td>
                   <td
                     style={{
@@ -900,7 +911,7 @@ const Dashboard = () => {
                   aria-expanded={isExpanded}
                 >
                   <span>
-                    {formatGroupDate(groupDate)}
+                    {formatAppointmentDate(groupDate)}
                     <span className="booking-date-count">
                       {" "}
                       · {items.length} booking{items.length !== 1 ? "s" : ""}
