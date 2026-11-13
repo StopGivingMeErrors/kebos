@@ -1,5 +1,5 @@
 // src/Dashboard.js
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { useNavigate } from "react-router-dom";
 import { auth, db } from "./firebase/firebaseConfig";
@@ -15,8 +15,8 @@ import {
   doc,
   query,
   where,
-  onSnapshot,
   getDoc,
+  writeBatch,
 } from "firebase/firestore";
 
 const todayISO = () => {
@@ -68,22 +68,12 @@ const Dashboard = () => {
   const hasSetInitialExpand = useRef(false);
   const [darkMode, setDarkMode] = useState(false);
   const [loading, setLoading] = useState(false);
-
-  // Redirect if not logged in + Setup real-time listeners
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
-      if (!user) {
-        navigate("/login");
-      }
-    });
-    return unsubscribe;
-  }, [navigate]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState(null);
 
   // helper: parse appointment (date + time) into a JS Date reliably
   const parseDateTime = (dateStr, timeStr) => {
     // Expect dateStr: "YYYY-MM-DD", timeStr: "HH:mm"
-    // Construct ISO-like local string with seconds to help parsing
-    // e.g. "2026-02-10T14:30:00"
     try {
       return new Date(`${dateStr}T${timeStr}:00`);
     } catch {
@@ -109,132 +99,142 @@ const Dashboard = () => {
     }
   };
 
-  // Real-time listener for upcoming slots only (avoids reading entire history)
-  useEffect(() => {
-    const slotsQuery = query(
-      collection(db, "schedules"),
-      where("date", ">=", todayISO())
-    );
+  const loadDashboardData = useCallback(async ({ silent = false } = {}) => {
+    if (silent) setRefreshing(true);
+    else setLoading(true);
 
-    const unsubscribe = onSnapshot(
-      slotsQuery,
-      (snapshot) => {
-        const now = new Date();
+    try {
+      const now = new Date();
+      const today = todayISO();
 
-        const fetchedSlots = snapshot.docs
-          .map((docSnap) => ({
+      const [slotsSnap, bookingsSnap] = await Promise.all([
+        getDocs(
+          query(collection(db, "schedules"), where("date", ">=", today))
+        ),
+        getDocs(
+          query(collection(db, "bookings"), where("date", ">=", today))
+        ),
+      ]);
+
+      const fetchedSlots = slotsSnap.docs
+        .map((docSnap) => ({
+          id: docSnap.id,
+          ...docSnap.data(),
+        }))
+        .filter((slot) => parseDateTime(slot.date, slot.time) > now)
+        .sort(
+          (a, b) =>
+            parseDateTime(a.date, a.time).getTime() -
+            parseDateTime(b.date, b.time).getTime()
+        );
+
+      const fetchedBookings = bookingsSnap.docs
+        .map((docSnap) => {
+          const raw = docSnap.data();
+          let createdAt = null;
+          if (raw.timestamp) {
+            createdAt =
+              typeof raw.timestamp.toDate === "function"
+                ? raw.timestamp.toDate()
+                : new Date(raw.timestamp);
+          }
+          return {
             id: docSnap.id,
-            ...docSnap.data(),
-          }))
-          .filter((slot) => {
-            const slotDateTime = parseDateTime(slot.date, slot.time);
-            return slotDateTime > now;
-          });
+            createdAt,
+            ...raw,
+          };
+        })
+        .filter((booking) => {
+          if (booking.status === "cancelled") return false;
+          return parseDateTime(booking.date, booking.time) > now;
+        })
+        .sort(
+          (a, b) =>
+            parseDateTime(a.date, a.time).getTime() -
+            parseDateTime(b.date, b.time).getTime()
+        );
 
-        fetchedSlots.sort((a, b) => {
-          const dateTimeA = parseDateTime(a.date, a.time).getTime();
-          const dateTimeB = parseDateTime(b.date, b.time).getTime();
-          return dateTimeA - dateTimeB;
-        });
+      setSlots(fetchedSlots);
+      setBookings(fetchedBookings);
+      setLastLoadedAt(new Date());
 
-        setSlots(fetchedSlots);
-      },
-      (error) => {
-        console.error("Error fetching slots:", error);
-        if (error.code === "resource-exhausted") {
-          alert(
-            "Firestore daily quota exceeded. Enable billing in Firebase or wait until midnight US Pacific."
-          );
-        } else {
-          alert("Failed to load schedule slots");
+      if (!hasSetInitialExpand.current && fetchedBookings.length > 0) {
+        const groups = groupBookingsByDate(fetchedBookings);
+        const start = new Date();
+        start.setHours(0, 0, 0, 0);
+        const weekAhead = new Date(start);
+        weekAhead.setDate(weekAhead.getDate() + 7);
+        const auto = new Set();
+        for (const { date: groupDate } of groups) {
+          const d = new Date(`${groupDate}T00:00:00`);
+          if (d <= weekAhead) auto.add(groupDate);
         }
+        if (auto.size === 0) auto.add(groups[0].date);
+        setExpandedDates(auto);
+        hasSetInitialExpand.current = true;
       }
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  // Real-time listener for upcoming bookings only (not all ~4k historical docs)
-  useEffect(() => {
-    const bookingsQuery = query(
-      collection(db, "bookings"),
-      where("date", ">=", todayISO())
-    );
-
-    const unsubscribe = onSnapshot(
-      bookingsQuery,
-      (snapshot) => {
-        const now = new Date();
-
-        const fetchedBookings = snapshot.docs
-          .map((docSnap) => {
-            const raw = docSnap.data();
-
-            let createdAt = null;
-            if (raw.timestamp) {
-              createdAt =
-                typeof raw.timestamp.toDate === "function"
-                  ? raw.timestamp.toDate()
-                  : new Date(raw.timestamp);
-            }
-
-            return {
-              id: docSnap.id,
-              createdAt,
-              ...raw,
-            };
-          })
-          .filter((booking) => {
-            if (booking.status === "cancelled") return false;
-            const bookingDateTime = parseDateTime(booking.date, booking.time);
-            return bookingDateTime > now;
-          });
-
-        fetchedBookings.sort((a, b) => {
-          const aDt = parseDateTime(a.date, a.time).getTime();
-          const bDt = parseDateTime(b.date, b.time).getTime();
-          return aDt - bDt;
-        });
-
-        setBookings(fetchedBookings);
-      },
-      (error) => {
-        console.error("Error fetching bookings:", error);
-        if (error.code === "resource-exhausted") {
-          alert(
-            "Firestore daily quota exceeded. Enable billing in Firebase or wait until midnight US Pacific."
-          );
-        } else {
-          alert("Failed to load bookings");
-        }
+    } catch (error) {
+      console.error("Error loading dashboard:", error);
+      if (error.code === "resource-exhausted") {
+        alert(
+          "Firestore daily quota exceeded. Wait until midnight US Pacific, or enable Blaze."
+        );
+      } else {
+        alert("Failed to load dashboard data");
       }
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  // Auto-expand the next 7 days of bookings once on first load
-  useEffect(() => {
-    if (hasSetInitialExpand.current || bookings.length === 0) return;
-
-    const groups = groupBookingsByDate(bookings);
-    if (groups.length === 0) return;
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const weekAhead = new Date(today);
-    weekAhead.setDate(weekAhead.getDate() + 7);
-
-    const auto = new Set();
-    for (const { date } of groups) {
-      const d = new Date(`${date}T00:00:00`);
-      if (d <= weekAhead) auto.add(date);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
-    if (auto.size === 0) auto.add(groups[0].date);
+  }, []);
 
-    setExpandedDates(auto);
-    hasSetInitialExpand.current = true;
-  }, [bookings]);
+  // Auth gate + one-shot load (no realtime listeners — saves Spark read quota)
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      if (!user) {
+        navigate("/login");
+        return;
+      }
+      loadDashboardData();
+    });
+    return unsubscribe;
+  }, [navigate, loadDashboardData]);
+
+  const deleteDocsInBatches = async (docs) => {
+    const chunkSize = 400;
+    for (let i = 0; i < docs.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      docs.slice(i, i + chunkSize).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  };
+
+  // One-time style cleanup: remove past schedule docs so collections stay small
+  const cleanupPastSchedules = async () => {
+    const confirmCleanup = window.confirm(
+      "Delete all PAST schedule slots (before today)?\nThis frees storage and prevents accidental full-collection scans.\nUpcoming slots are kept."
+    );
+    if (!confirmCleanup) return;
+
+    setLoading(true);
+    try {
+      const snapshot = await getDocs(
+        query(collection(db, "schedules"), where("date", "<", todayISO()))
+      );
+      if (snapshot.empty) {
+        alert("No past schedule slots to clean up.");
+        return;
+      }
+      await deleteDocsInBatches(snapshot.docs);
+      alert(`Deleted ${snapshot.size} past schedule slots.`);
+      await loadDashboardData({ silent: true });
+    } catch (error) {
+      console.error("Cleanup failed:", error);
+      alert("Failed to clean up past slots.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const filteredBookings = bookings.filter((b) => {
     if (!bookingSearch.trim()) return true;
@@ -377,6 +377,7 @@ const Dashboard = () => {
       setDaysAhead(1);
 
       alert(`${promises.length} slots generated successfully!`);
+      await loadDashboardData({ silent: true });
     } catch (err) {
       console.error("Error adding slots:", err);
       alert("Failed to generate slots. Please try again.");
@@ -447,6 +448,7 @@ const Dashboard = () => {
       await deleteDoc(bookingRef);
 
       alert(`Booking for ${booking.name} has been cancelled`);
+      await loadDashboardData({ silent: true });
     } catch (err) {
       console.error("Failed to cancel booking:", err);
       alert("Failed to cancel booking. Please try again.");
@@ -477,16 +479,17 @@ const Dashboard = () => {
       }
 
       await deleteDoc(slotRef);
+      await loadDashboardData({ silent: true });
     } catch (error) {
       console.error("Error deleting slot:", error);
       alert("Failed to delete slot");
     }
   };
 
-  // Clear ALL schedule slots
+  // Clear upcoming schedule slots
   const clearAllSlots = async () => {
     const confirmDelete = window.confirm(
-      "Are you sure you want to delete ALL schedule slots?\nThis cannot be undone."
+      "Delete ALL upcoming schedule slots?\nThis cannot be undone."
     );
 
     if (!confirmDelete) return;
@@ -494,18 +497,14 @@ const Dashboard = () => {
     setLoading(true);
 
     try {
-      // Only clear upcoming slots — avoids reading/deleting entire history
       const snapshot = await getDocs(
         query(collection(db, "schedules"), where("date", ">=", todayISO()))
       );
 
-      const deletePromises = snapshot.docs.map((d) =>
-        deleteDoc(doc(db, "schedules", d.id))
-      );
-
-      await Promise.all(deletePromises);
+      await deleteDocsInBatches(snapshot.docs);
 
       alert(`Cleared ${snapshot.size} upcoming slots`);
+      await loadDashboardData({ silent: true });
     } catch (error) {
       console.error("Error clearing slots:", error);
       alert("Failed to clear slots");
@@ -555,38 +554,94 @@ const Dashboard = () => {
         </div>
       )}
 
-      <ThemeToggle darkMode={darkMode} setDarkMode={setDarkMode} />
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: "0.75rem",
+          flexWrap: "wrap",
+          marginBottom: "0.75rem",
+        }}
+      >
+        <h1 style={{ color: "#2563eb", margin: 0 }}>Barber Dashboard</h1>
+        <ThemeToggle darkMode={darkMode} setDarkMode={setDarkMode} />
+      </div>
 
-      <h1 style={{ color: "#2563eb" }}>Barber Dashboard</h1>
-      <button
-        onClick={handleLogout}
+      <div
         style={{
-          padding: "0.5rem 1rem",
-          marginBottom: "1rem",
-          background: "#ef4444",
-          color: "white",
-          border: "none",
-          borderRadius: "6px",
-          cursor: "pointer",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "0.5rem",
+          marginBottom: "0.5rem",
+          alignItems: "center",
         }}
       >
-        Logout
-      </button>
-      <button
-        onClick={() => navigate("/statistics")}
-        style={{
-          padding: "0.5rem 1rem",
-          marginBottom: "1rem",
-          marginLeft: "0.5rem",
-          background: "#10b981",
-          color: "white",
-          border: "none",
-          borderRadius: "6px",
-          cursor: "pointer",
-        }}
-      >
-        📊 Statistics
-      </button>
+        <button
+          type="button"
+          onClick={() => loadDashboardData({ silent: true })}
+          disabled={loading || refreshing}
+          style={{
+            padding: "0.5rem 1rem",
+            background: refreshing ? "#93c5fd" : "#2563eb",
+            color: "white",
+            border: "none",
+            borderRadius: "6px",
+            cursor: refreshing ? "not-allowed" : "pointer",
+          }}
+        >
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+        <button
+          type="button"
+          onClick={() => navigate("/statistics")}
+          style={{
+            padding: "0.5rem 1rem",
+            background: "#10b981",
+            color: "white",
+            border: "none",
+            borderRadius: "6px",
+            cursor: "pointer",
+          }}
+        >
+          Statistics
+        </button>
+        <button
+          type="button"
+          onClick={cleanupPastSchedules}
+          disabled={loading}
+          style={{
+            padding: "0.5rem 1rem",
+            background: "#6b7280",
+            color: "white",
+            border: "none",
+            borderRadius: "6px",
+            cursor: loading ? "not-allowed" : "pointer",
+          }}
+        >
+          Clean past slots
+        </button>
+        <button
+          type="button"
+          onClick={handleLogout}
+          style={{
+            padding: "0.5rem 1rem",
+            background: "#ef4444",
+            color: "white",
+            border: "none",
+            borderRadius: "6px",
+            cursor: "pointer",
+          }}
+        >
+          Logout
+        </button>
+      </div>
+      {lastLoadedAt && (
+        <p style={{ margin: "0 0 1rem 0", fontSize: "0.85rem", opacity: 0.7 }}>
+          Loaded {lastLoadedAt.toLocaleTimeString()} · not live — tap Refresh to
+          update
+        </p>
+      )}
       <h2>Add Schedule Slots</h2>
       <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem", flexWrap: "wrap" }}>
         <input

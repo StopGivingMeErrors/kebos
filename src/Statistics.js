@@ -29,6 +29,7 @@ const Statistics = () => {
   const navigate = useNavigate();
   const [bookings, setBookings] = useState([]);
   const [darkMode, setDarkMode] = useState(false);
+  const [loadingStats, setLoadingStats] = useState(true);
 
   // Redirect if not logged in
   useEffect(() => {
@@ -40,33 +41,30 @@ const Statistics = () => {
     return unsubscribe;
   }, [navigate]);
 
-  // One-shot load of recent bookings (no live listener over full history)
+  // One-shot load — last 90 days only (enough for day chart + recent months)
+  const loadStats = async () => {
+    setLoadingStats(true);
+    try {
+      const q = query(
+        collection(db, "bookings"),
+        where("date", ">=", monthsAgoISO(3))
+      );
+      const snapshot = await getDocs(q);
+      setBookings(
+        snapshot.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...docSnap.data(),
+        }))
+      );
+    } catch (error) {
+      console.error("Error fetching bookings:", error);
+    } finally {
+      setLoadingStats(false);
+    }
+  };
+
   useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const q = query(
-          collection(db, "bookings"),
-          where("date", ">=", monthsAgoISO(12))
-        );
-        const snapshot = await getDocs(q);
-        if (cancelled) return;
-        setBookings(
-          snapshot.docs.map((docSnap) => ({
-            id: docSnap.id,
-            ...docSnap.data(),
-          }))
-        );
-      } catch (error) {
-        console.error("Error fetching bookings:", error);
-      }
-    };
-
-    load();
-    return () => {
-      cancelled = true;
-    };
+    loadStats();
   }, []);
 
   // Process bookings by day
@@ -110,26 +108,51 @@ const Statistics = () => {
         transition: "all 0.3s ease",
       }}
     >
-      <ThemeToggle darkMode={darkMode} setDarkMode={setDarkMode} />
-
-      <button
-        onClick={() => navigate("/dashboard")}
+      <div
         style={{
-          padding: "0.5rem 1rem",
-          marginBottom: "1.5rem",
-          background: "#6b7280",
-          color: "white",
-          border: "none",
-          borderRadius: "6px",
-          cursor: "pointer",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: "0.75rem",
+          flexWrap: "wrap",
+          marginBottom: "1rem",
         }}
       >
-        ← Back to Dashboard
-      </button>
+        <h1 style={{ color: "#2563eb", margin: 0 }}>Booking Statistics</h1>
+        <ThemeToggle darkMode={darkMode} setDarkMode={setDarkMode} />
+      </div>
 
-      <h1 style={{ color: "#2563eb", marginBottom: "2rem" }}>
-        📊 Booking Statistics
-      </h1>
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.5rem" }}>
+        <button
+          type="button"
+          onClick={() => navigate("/dashboard")}
+          style={{
+            padding: "0.5rem 1rem",
+            background: "#6b7280",
+            color: "white",
+            border: "none",
+            borderRadius: "6px",
+            cursor: "pointer",
+          }}
+        >
+          ← Back to Dashboard
+        </button>
+        <button
+          type="button"
+          onClick={loadStats}
+          disabled={loadingStats}
+          style={{
+            padding: "0.5rem 1rem",
+            background: loadingStats ? "#93c5fd" : "#2563eb",
+            color: "white",
+            border: "none",
+            borderRadius: "6px",
+            cursor: loadingStats ? "not-allowed" : "pointer",
+          }}
+        >
+          {loadingStats ? "Loading…" : "Refresh"}
+        </button>
+      </div>
 
       {/* Summary */}
       <div
@@ -151,7 +174,7 @@ const Statistics = () => {
           {totalBookings}
         </h2>
         <p style={{ margin: 0, fontSize: "1.2rem", opacity: 0.8 }}>
-          Total Bookings
+          Bookings (last 90 days)
         </p>
       </div>
 

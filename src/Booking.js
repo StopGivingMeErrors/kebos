@@ -38,15 +38,26 @@ function Booking() {
   const fetchSlots = async () => {
     try {
       setLoadError("");
-      // Single-field query (auto-indexed). Avoids composite-index failures
-      // and avoids reading the entire historical schedules collection.
-      const q = query(
-        collection(db, "schedules"),
-        where("date", ">=", todayISO())
-      );
-
-      const snapshot = await getDocs(q);
       const now = new Date();
+      const today = todayISO();
+      let snapshot;
+
+      try {
+        // Prefer free + upcoming only (needs composite index)
+        snapshot = await getDocs(
+          query(
+            collection(db, "schedules"),
+            where("isBooked", "==", false),
+            where("date", ">=", today)
+          )
+        );
+      } catch (indexErr) {
+        if (indexErr.code !== "failed-precondition") throw indexErr;
+        // Fallback until composite index is built
+        snapshot = await getDocs(
+          query(collection(db, "schedules"), where("date", ">=", today))
+        );
+      }
 
       const slots = snapshot.docs
         .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
