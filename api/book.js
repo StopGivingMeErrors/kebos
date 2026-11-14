@@ -1,6 +1,6 @@
 const { applyCors } = require("./_lib/cors");
 const { enforceRateLimit } = require("./_lib/rateLimit");
-const { getDb } = require("./_lib/firebaseAdmin");
+const { getDb, adminConfigClientMessage } = require("./_lib/firebaseAdmin");
 const {
   validateBookInput,
   createBookingTransaction,
@@ -59,9 +59,9 @@ module.exports = async (req, res) => {
       ...(emailResult.ok ? {} : { emailError: emailResult.error }),
     });
   } catch (error) {
-    if (error.code === "ADMIN_CONFIG") {
-      console.error(error.message);
-      return res.status(500).json({ error: "Server is not configured for bookings" });
+    if (error.code === "ADMIN_CONFIG" || error.code === "ADMIN_KEY_FORMAT") {
+      console.error("[api/book]", error.message);
+      return res.status(500).json({ error: adminConfigClientMessage(error) });
     }
     if (error.code === "SLOT_TAKEN" || error.message === "SLOT_TAKEN") {
       return res.status(409).json({ error: "SLOT_TAKEN" });

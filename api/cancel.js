@@ -1,6 +1,6 @@
 const { applyCors } = require("./_lib/cors");
 const { enforceRateLimit } = require("./_lib/rateLimit");
-const { getDb } = require("./_lib/firebaseAdmin");
+const { getDb, adminConfigClientMessage } = require("./_lib/firebaseAdmin");
 const { requireStaff } = require("./_lib/staffAuth");
 const {
   findBookingByCancelToken,
@@ -120,9 +120,9 @@ module.exports = async (req, res) => {
       },
     });
   } catch (error) {
-    if (error.code === "ADMIN_CONFIG") {
-      console.error(error.message);
-      return res.status(500).json({ error: "Server is not configured for cancellations" });
+    if (error.code === "ADMIN_CONFIG" || error.code === "ADMIN_KEY_FORMAT") {
+      console.error("[api/cancel]", error.message);
+      return res.status(500).json({ error: adminConfigClientMessage(error) });
     }
     if (error.code === "ALREADY_CANCELLED" || error.message === "ALREADY_CANCELLED") {
       return res.status(410).json({ error: "ALREADY_CANCELLED" });

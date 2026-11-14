@@ -5,7 +5,7 @@
  */
 const { applyCors } = require("./_lib/cors");
 const { enforceRateLimit } = require("./_lib/rateLimit");
-const { getDb } = require("./_lib/firebaseAdmin");
+const { getDb, adminConfigClientMessage } = require("./_lib/firebaseAdmin");
 const { sendBookingEmail } = require("./_lib/email");
 const {
   findBookingByCancelToken,
@@ -94,9 +94,9 @@ module.exports = async (req, res) => {
 
     return res.status(200).json({ success: true, id: result.id || null });
   } catch (error) {
-    if (error.code === "ADMIN_CONFIG") {
-      console.error(error.message);
-      return res.status(500).json({ error: "Server is not configured" });
+    if (error.code === "ADMIN_CONFIG" || error.code === "ADMIN_KEY_FORMAT") {
+      console.error("[api/send-email]", error.message);
+      return res.status(500).json({ error: adminConfigClientMessage(error) });
     }
     if (error.code === "EMAIL_CONFIG" || error.code === "INVALID_BOOKING_EMAIL") {
       return res.status(500).json({ error: error.message });

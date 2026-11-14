@@ -1,10 +1,14 @@
 /**
- * Rate limiting: Upstash Redis when configured, else Firestore fixed-window.
- * Applied per IP and optionally per email. Generous defaults for real guests.
+ * Rate limiting: Prefer Upstash Redis when configured; else Firestore fixed-window.
  *
- * Env for Upstash:
- *   UPSTASH_REDIS_REST_URL
- *   UPSTASH_REDIS_REST_TOKEN
+ * Recommended for production: set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN
+ * (shared across serverless instances, no _rateLimits growth).
+ *
+ * Firestore fallback writes one doc per key per window with expireAt (TTL).
+ * Configure a Firestore TTL policy on collection `_rateLimits`, field `expireAt`
+ * (Firebase Console → Firestore → TTL) so expired windows are deleted automatically.
+ * Hot path: one transactional set per check; expired docs are ignored/overwritten
+ * (no extra delete write).
  */
 const { getClientIp } = require("./clientIp");
 
@@ -50,9 +54,17 @@ function sanitizeKeyPart(value) {
     .slice(0, 120);
 }
 
+function toMillis(value) {
+  if (value == null) return null;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value;
+  return null;
+}
+
 /**
  * Fixed-window counter in Firestore (Admin SDK).
- * Collection: _rateLimits (client access denied in rules).
+ * Stores expireAt for Firestore TTL policy cleanup.
  */
 async function firestoreFixedWindow(db, { fullKey, max, windowMs }) {
   const now = Date.now();
@@ -67,16 +79,24 @@ async function firestoreFixedWindow(db, { fullKey, max, windowMs }) {
 
     if (snap.exists) {
       const data = snap.data();
-      if (data.windowStart === windowStart) {
+      const expireMs = toMillis(data.expireAt);
+      const stillValid =
+        data.windowStart === windowStart &&
+        (expireMs == null || expireMs > now);
+
+      if (stillValid) {
         count = Number(data.count) || 0;
       }
+      // else: expired or prior window → treat as fresh (overwrite below)
     }
 
     count += 1;
+    // Single write: overwrite same doc. TTL field expireAt = end of window.
     tx.set(ref, {
       windowStart,
       count,
-      updatedAt: new Date(),
+      updatedAt: new Date(now),
+      expireAt: new Date(resetAt),
     });
 
     return { count, resetAt };
@@ -113,16 +133,6 @@ async function checkOneKey(fullKey, { max, windowMs }) {
   }
 }
 
-/**
- * @param {import('http').IncomingMessage} req
- * @param {{
- *   keyPrefix?: string,
- *   max?: number,
- *   windowMs?: number,
- *   email?: string|null,
- *   emailMax?: number,
- * }} [opts]
- */
 async function checkRateLimit(req, opts = {}) {
   const windowMs = opts.windowMs ?? 60_000;
   const max = opts.max ?? 60;
