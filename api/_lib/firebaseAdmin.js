@@ -58,8 +58,31 @@ function initFirebaseAdmin() {
     return admin;
   }
 
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const projectId = process.env.FIREBASE_PROJECT_ID || "kebos-d63af";
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const gac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+  // Prefer explicit cert env; else Application Default Credentials (local scripts)
+  if ((!clientEmail || !process.env.FIREBASE_PRIVATE_KEY) && gac) {
+    try {
+      admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
+        projectId,
+      });
+      initialized = true;
+      return admin;
+    } catch (error) {
+      console.error(
+        "[firebaseAdmin] GOOGLE_APPLICATION_CREDENTIALS init failed:",
+        error.message
+      );
+      const err = new Error(
+        "Firebase Admin ADC failed. Check GOOGLE_APPLICATION_CREDENTIALS path."
+      );
+      err.code = "ADMIN_CONFIG";
+      throw err;
+    }
+  }
 
   let privateKey;
   try {
@@ -72,7 +95,7 @@ function initFirebaseAdmin() {
     throw error;
   }
 
-  if (!projectId || !clientEmail || !privateKey) {
+  if (!clientEmail || !privateKey) {
     const message = missingAdminEnvMessage();
     console.error("[firebaseAdmin]", message);
     const err = new Error(message);

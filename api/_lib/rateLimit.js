@@ -1,37 +1,40 @@
 /**
- * Rate limiting: Prefer Upstash Redis when configured; else Firestore fixed-window.
+ * Rate limiting: Prefer Upstash/Vercel KV REST when configured; else Firestore.
  *
- * Recommended for production: set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN
- * (shared across serverless instances, no _rateLimits growth).
+ * Env (any of):
+ *   UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN
+ *   or Vercel integration: *_KV_REST_API_URL + *_KV_REST_API_TOKEN (RW, not READ_ONLY)
  *
- * Firestore fallback writes one doc per key per window with expireAt (TTL).
- * Configure a Firestore TTL policy on collection `_rateLimits`, field `expireAt`
- * (Firebase Console → Firestore → TTL) so expired windows are deleted automatically.
- * Hot path: one transactional set per check; expired docs are ignored/overwritten
- * (no extra delete write).
+ * On any Upstash error: fall back to Firestore fixed-window (never block bookings
+ * solely because Redis is down). If Firestore also fails, fail open (allow).
+ *
+ * Firestore fallback: collection `_rateLimits`, field `expireAt` for TTL policy.
  */
 const { getClientIp } = require("./clientIp");
+const { resolveUpstashRestEnv } = require("./upstashEnv");
 
 const upstashLimiters = new Map();
-
-function hasUpstashEnv() {
-  return Boolean(
-    process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
-  );
-}
+let loggedUpstashSource = false;
 
 function getUpstashLimiter(max, windowMs) {
-  if (!hasUpstashEnv()) return null;
+  const creds = resolveUpstashRestEnv();
+  if (!creds) return null;
+
+  if (!loggedUpstashSource) {
+    console.log(`[rateLimit] Using Upstash/KV REST creds from ${creds.source}`);
+    loggedUpstashSource = true;
+  }
+
   const windowSec = Math.max(1, Math.round(windowMs / 1000));
-  const cacheKey = `${max}:${windowSec}`;
+  const cacheKey = `${creds.source}:${max}:${windowSec}`;
   if (upstashLimiters.has(cacheKey)) return upstashLimiters.get(cacheKey);
 
   try {
     const { Ratelimit } = require("@upstash/ratelimit");
     const { Redis } = require("@upstash/redis");
     const redis = new Redis({
-      url: process.env.UPSTASH_REDIS_REST_URL,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN,
+      url: creds.url,
+      token: creds.token,
     });
     const limiter = new Ratelimit({
       redis,
@@ -42,7 +45,10 @@ function getUpstashLimiter(max, windowMs) {
     upstashLimiters.set(cacheKey, limiter);
     return limiter;
   } catch (error) {
-    console.error("Upstash ratelimit init failed; using Firestore fallback:", error.message);
+    console.warn(
+      "[rateLimit] Upstash init failed; will use Firestore fallback:",
+      error.message
+    );
     return null;
   }
 }
@@ -62,10 +68,6 @@ function toMillis(value) {
   return null;
 }
 
-/**
- * Fixed-window counter in Firestore (Admin SDK).
- * Stores expireAt for Firestore TTL policy cleanup.
- */
 async function firestoreFixedWindow(db, { fullKey, max, windowMs }) {
   const now = Date.now();
   const windowStart = Math.floor(now / windowMs) * windowMs;
@@ -87,11 +89,9 @@ async function firestoreFixedWindow(db, { fullKey, max, windowMs }) {
       if (stillValid) {
         count = Number(data.count) || 0;
       }
-      // else: expired or prior window → treat as fresh (overwrite below)
     }
 
     count += 1;
-    // Single write: overwrite same doc. TTL field expireAt = end of window.
     tx.set(ref, {
       windowStart,
       count,
@@ -106,31 +106,48 @@ async function firestoreFixedWindow(db, { fullKey, max, windowMs }) {
     return {
       ok: false,
       retryAfterSec: Math.max(1, Math.ceil((result.resetAt - now) / 1000)),
+      backend: "firestore",
     };
   }
-  return { ok: true, retryAfterSec: 0 };
+  return { ok: true, retryAfterSec: 0, backend: "firestore" };
+}
+
+async function checkFirestoreFallback(fullKey, { max, windowMs }) {
+  try {
+    const { getDb } = require("./firebaseAdmin");
+    return firestoreFixedWindow(getDb(), { fullKey, max, windowMs });
+  } catch (error) {
+    console.warn(
+      "[rateLimit] Firestore fallback failed open (allowing request):",
+      error.message
+    );
+    return { ok: true, retryAfterSec: 0, backend: "fail-open" };
+  }
 }
 
 async function checkOneKey(fullKey, { max, windowMs }) {
   const limiter = getUpstashLimiter(max, windowMs);
   if (limiter) {
-    const { success, reset } = await limiter.limit(fullKey);
-    if (!success) {
-      return {
-        ok: false,
-        retryAfterSec: Math.max(1, Math.ceil((reset - Date.now()) / 1000)),
-      };
+    try {
+      const { success, reset } = await limiter.limit(fullKey);
+      if (!success) {
+        return {
+          ok: false,
+          retryAfterSec: Math.max(1, Math.ceil((reset - Date.now()) / 1000)),
+          backend: "upstash",
+        };
+      }
+      return { ok: true, retryAfterSec: 0, backend: "upstash" };
+    } catch (error) {
+      console.warn(
+        "[rateLimit] Upstash limit() error; falling back to Firestore:",
+        error.message
+      );
+      return checkFirestoreFallback(fullKey, { max, windowMs });
     }
-    return { ok: true, retryAfterSec: 0 };
   }
 
-  try {
-    const { getDb } = require("./firebaseAdmin");
-    return firestoreFixedWindow(getDb(), { fullKey, max, windowMs });
-  } catch (error) {
-    console.error("Rate limit fallback failed open:", error.message);
-    return { ok: true, retryAfterSec: 0 };
-  }
+  return checkFirestoreFallback(fullKey, { max, windowMs });
 }
 
 async function checkRateLimit(req, opts = {}) {
@@ -152,7 +169,7 @@ async function checkRateLimit(req, opts = {}) {
     if (!emailResult.ok) return emailResult;
   }
 
-  return { ok: true, retryAfterSec: 0 };
+  return { ok: true, retryAfterSec: 0, backend: ipResult.backend };
 }
 
 async function enforceRateLimit(req, res, opts) {
@@ -172,6 +189,6 @@ module.exports = {
   checkRateLimit,
   enforceRateLimit,
   firestoreFixedWindow,
-  hasUpstashEnv,
   sanitizeKeyPart,
+  resolveUpstashRestEnv,
 };
