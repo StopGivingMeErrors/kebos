@@ -29,6 +29,14 @@ function getAllowedOrigins() {
   }
 
   const origins = [...DEFAULT_PROD_ORIGINS];
+  // This deployment's own host (staged *.vercel.app) so same-origin POSTs work
+  const vercelUrl = process.env.VERCEL_URL
+    ? String(process.env.VERCEL_URL).replace(/^https?:\/\//, "")
+    : "";
+  if (vercelUrl) {
+    const self = `https://${vercelUrl}`;
+    if (!origins.includes(self)) origins.push(self);
+  }
   const vercelEnv = process.env.VERCEL_ENV; // production | preview | development
   const allowLocal =
     vercelEnv === "development" ||
@@ -45,9 +53,33 @@ function isAllowedOrigin(origin) {
 }
 
 /**
- * Strict origin check: missing Origin is rejected (prevents curl open-relay).
+ * Browser same-origin GETs (e.g. cancel-page preview) often omit Origin.
+ * Accept when Sec-Fetch-Site is same-origin, or Referer origin is allowlisted.
+ * Never used for POST — those stay strict (Origin required + allowlisted).
  */
-function applyCors(req, res) {
+function isTrustedSameOriginGet(req) {
+  if (String(req.method || "").toUpperCase() !== "GET") return false;
+
+  const site = String(req.headers["sec-fetch-site"] || "").toLowerCase();
+  if (site === "same-origin") return true;
+
+  const referer = req.headers.referer || req.headers.referrer;
+  if (!referer) return false;
+  try {
+    return isAllowedOrigin(new URL(String(referer)).origin);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Strict origin check: missing Origin is rejected (prevents curl open-relay),
+ * except optional GET same-origin browser previews when opts.allowSameOriginGet.
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.allowSameOriginGet] — cancel GET preview only
+ */
+function applyCors(req, res, opts = {}) {
   const origin = req.headers.origin;
 
   if (req.method === "OPTIONS") {
@@ -64,14 +96,26 @@ function applyCors(req, res) {
     return { ok: false, handled: true };
   }
 
-  if (!isAllowedOrigin(origin)) {
+  if (isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    return { ok: true, origin };
+  }
+
+  // Explicit Origin that is not allowlisted → always refuse (incl. cross-site GET)
+  if (origin) {
     res.status(403).json({ error: "Forbidden origin" });
     return { ok: false, handled: true };
   }
 
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Vary", "Origin");
-  return { ok: true, origin };
+  // No Origin: only GET previews may pass via same-origin / Referer trust
+  if (opts.allowSameOriginGet && isTrustedSameOriginGet(req)) {
+    res.setHeader("Vary", "Origin, Sec-Fetch-Site, Referer");
+    return { ok: true, origin: null };
+  }
+
+  res.status(403).json({ error: "Forbidden origin" });
+  return { ok: false, handled: true };
 }
 
 module.exports = {
@@ -79,5 +123,6 @@ module.exports = {
   LOCAL_ORIGINS,
   getAllowedOrigins,
   isAllowedOrigin,
+  isTrustedSameOriginGet,
   applyCors,
 };

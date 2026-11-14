@@ -10,21 +10,24 @@ const {
 } = require("./_lib/bookings");
 
 function publicBookingView(record) {
-  const { id, data } = record;
+  const { data } = record;
+  // Only what CancelBookingPage needs — never email
   return {
-    bookingId: id,
     name: data.name,
     date: data.date,
     time: data.time,
     status: data.status || "active",
-    // email intentionally omitted
   };
 }
 
 module.exports = async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
-  const cors = applyCors(req, res);
+  // GET preview: allow browser same-origin fetches that omit Origin.
+  // POST stays strict (Origin required + allowlisted) — cancel button + staff.
+  const cors = applyCors(req, res, {
+    allowSameOriginGet: req.method === "GET",
+  });
   if (cors.handled) return;
   if (!cors.ok) return;
 

@@ -106,7 +106,78 @@ function run() {
     }
   );
 
-  console.log("PASS: kevos.site allowed; evil.example → 403; ALLOWED_ORIGINS env works");
+  // GET cancel preview: browser same-origin often omits Origin
+  withEnv(
+    {
+      ALLOWED_ORIGINS: undefined,
+      VERCEL_ENV: "production",
+      NODE_ENV: "production",
+    },
+    ({ applyCors }) => {
+      const resSame = mockRes();
+      const same = applyCors(
+        {
+          method: "GET",
+          headers: { "sec-fetch-site": "same-origin" },
+        },
+        resSame,
+        { allowSameOriginGet: true }
+      );
+      assert.strictEqual(same.ok, true, "same-origin GET without Origin allowed");
+
+      const resRef = mockRes();
+      const viaRef = applyCors(
+        {
+          method: "GET",
+          headers: { referer: "https://kevos.site/cancel-booking?token=abc" },
+        },
+        resRef,
+        { allowSameOriginGet: true }
+      );
+      assert.strictEqual(viaRef.ok, true, "GET with allowlisted Referer allowed");
+
+      const resCross = mockRes();
+      const cross = applyCors(
+        {
+          method: "GET",
+          headers: {
+            origin: "https://evil.example",
+            "sec-fetch-site": "cross-site",
+          },
+        },
+        resCross,
+        { allowSameOriginGet: true }
+      );
+      assert.strictEqual(cross.ok, false);
+      assert.strictEqual(resCross.statusCode, 403);
+
+      const resNoTrust = mockRes();
+      const bare = applyCors(
+        { method: "GET", headers: {} },
+        resNoTrust,
+        { allowSameOriginGet: true }
+      );
+      assert.strictEqual(bare.ok, false, "GET with no Origin/Sec-Fetch/Referer refused");
+      assert.strictEqual(resNoTrust.statusCode, 403);
+
+      // POST still strict: missing Origin → 403 even with same-origin hint
+      const resPost = mockRes();
+      const post = applyCors(
+        {
+          method: "POST",
+          headers: { "sec-fetch-site": "same-origin" },
+        },
+        resPost,
+        { allowSameOriginGet: true }
+      );
+      assert.strictEqual(post.ok, false);
+      assert.strictEqual(resPost.statusCode, 403);
+    }
+  );
+
+  console.log(
+    "PASS: kevos.site allowed; evil.example → 403; ALLOWED_ORIGINS env works; GET same-origin preview OK; cross-site GET refused; POST stays strict"
+  );
 }
 
 run();
