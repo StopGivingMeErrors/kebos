@@ -2,16 +2,13 @@ import React, { useState, useEffect } from "react";
 import { db } from "./firebase/firebaseConfig";
 import {
   collection,
-  doc,
   getDocs,
   query,
   where,
-  runTransaction,
 } from "firebase/firestore";
 import ThemeToggle from "./ThemeToggle";
 import { formatAppointmentSlot } from "./dateFormat";
 import { useToast } from "./ToastContext";
-import { sendAppEmail } from "./sendEmail";
 
 const todayISO = () => {
   const d = new Date();
@@ -19,13 +16,6 @@ const todayISO = () => {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
-};
-
-const makeCancelToken = () => {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return `tok_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
 };
 
 function Booking() {
@@ -118,51 +108,50 @@ function Booking() {
     setSubmitting(true);
 
     try {
-      const slotRef = doc(db, "schedules", selectedSlot);
-      // Use cancel token as booking document ID so cancel links can getDoc
-      // without listing the bookings collection or needing a cancelTokens collection.
-      const cancelToken = makeCancelToken();
-      const bookingRef = doc(db, "bookings", cancelToken);
-
-      const bookingData = await runTransaction(db, async (transaction) => {
-        const slotDoc = await transaction.get(slotRef);
-
-        if (!slotDoc.exists()) throw new Error("SLOT_NOT_FOUND");
-
-        const slotData = slotDoc.data();
-
-        if (slotData.isBooked) throw new Error("SLOT_TAKEN");
-
-        transaction.update(slotRef, { isBooked: true });
-        transaction.set(bookingRef, {
+      const response = await fetch("/api/book", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           name: name.trim(),
           email: email.trim().toLowerCase(),
           slotId: selectedSlot,
-          date: slotData.date,
-          time: slotData.time,
-          timestamp: new Date(),
-          cancelToken,
-          status: "active",
-        });
-
-        return slotData;
+        }),
       });
 
-      const cancelUrl = `${window.location.origin}/cancel-booking?token=${cancelToken}`;
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
 
-      const emailResult = await sendAppEmail({
-        type: "booking_confirmed",
-        to: email.trim().toLowerCase(),
-        name: name.trim(),
-        date: bookingData.date,
-        time: bookingData.time,
-        cancelUrl,
-      });
+      if (response.status === 409 || data?.error === "SLOT_TAKEN") {
+        toast.error("That slot was just taken. Please choose another time.");
+        await fetchSlots();
+        return;
+      }
 
-      if (emailResult.ok) {
-        toast.success("Your appointment is confirmed. A confirmation email is on the way.");
+      if (response.status === 404 || data?.error === "SLOT_NOT_FOUND") {
+        toast.error("That slot is no longer available. Please choose another.");
+        await fetchSlots();
+        return;
+      }
+
+      if (response.status === 429) {
+        toast.error("Too many requests. Please wait a moment and try again.");
+        return;
+      }
+
+      if (!response.ok) {
+        toast.error("Booking failed. Please try again in a moment.");
+        return;
+      }
+
+      if (data?.emailSent) {
+        toast.success(
+          "Your appointment is confirmed. A confirmation email is on the way."
+        );
       } else {
-        console.error("Confirmation email failed:", emailResult.error);
         toast.warning(
           "Your appointment is confirmed, but the confirmation email could not be sent."
         );
@@ -175,22 +164,7 @@ function Booking() {
       await fetchSlots();
     } catch (error) {
       console.error(error);
-
-      if (error.message === "SLOT_TAKEN") {
-        toast.error("That slot was just taken. Please choose another time.");
-        await fetchSlots();
-      } else if (error.message === "SLOT_NOT_FOUND") {
-        toast.error("That slot is no longer available. Please choose another.");
-        await fetchSlots();
-      } else if (error.code === "resource-exhausted") {
-        toast.error(
-          "Booking is temporarily unavailable (daily limit reached). Please try again later today."
-        );
-      } else if (error.code === "permission-denied") {
-        toast.error("Booking could not be completed. Please contact the shop.");
-      } else {
-        toast.error("Booking failed. Please try again in a moment.");
-      }
+      toast.error("Booking failed. Please try again in a moment.");
     } finally {
       setSubmitting(false);
     }

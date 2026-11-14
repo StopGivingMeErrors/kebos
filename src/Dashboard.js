@@ -7,13 +7,11 @@ import { signOut } from "firebase/auth";
 import ThemeToggle from "./ThemeToggle";
 import { formatAppointmentDate } from "./dateFormat";
 import { useToast } from "./ToastContext";
-import { sendAppEmail } from "./sendEmail";
 import "./Dashboard.css";
 import {
   collection,
   addDoc,
   getDocs,
-  updateDoc,
   deleteDoc,
   doc,
   query,
@@ -402,47 +400,48 @@ const Dashboard = () => {
     setLoading(true);
 
     try {
-      const bookingRef = doc(db, "bookings", booking.id);
-      const bookingSnap = await getDoc(bookingRef);
-
-      if (!bookingSnap.exists()) {
-        toast.info("This booking has already been cancelled.");
-        setLoading(false);
+      const user = auth.currentUser;
+      if (!user) {
+        toast.error("You must be signed in to cancel bookings.");
+        navigate("/login");
         return;
       }
 
-      const live = bookingSnap.data();
-      const slotId = live.slotId || booking.slotId;
-
-      if (slotId) {
-        await updateDoc(doc(db, "schedules", slotId), { isBooked: false });
-      } else {
-        const slotsQuery = query(
-          collection(db, "schedules"),
-          where("date", "==", booking.date),
-          where("time", "==", booking.time)
-        );
-        const querySnapshot = await getDocs(slotsQuery);
-        if (!querySnapshot.empty) {
-          await updateDoc(querySnapshot.docs[0].ref, { isBooked: false });
-        }
-      }
-
-      const emailResult = await sendAppEmail({
-        type: "booking_cancelled",
-        to: booking.email,
-        name: booking.name,
-        date: booking.date,
-        time: booking.time,
+      const idToken = await user.getIdToken();
+      const response = await fetch("/api/cancel", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ bookingId: booking.id }),
       });
 
-      if (!emailResult.ok) {
-        console.error("Cancellation email failed:", emailResult.error);
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
       }
 
-      await deleteDoc(bookingRef);
+      if (response.status === 410 || data?.error === "ALREADY_CANCELLED") {
+        toast.info("This booking has already been cancelled.");
+        await loadDashboardData({ silent: true });
+        return;
+      }
 
-      if (emailResult.ok) {
+      if (response.status === 404 || data?.error === "NOT_FOUND") {
+        toast.info("This booking has already been cancelled.");
+        await loadDashboardData({ silent: true });
+        return;
+      }
+
+      if (!response.ok) {
+        toast.error("Failed to cancel booking. Please try again.");
+        return;
+      }
+
+      if (data?.emailSent) {
         toast.success(`Booking for ${booking.name} cancelled. Email sent.`);
       } else {
         toast.warning(

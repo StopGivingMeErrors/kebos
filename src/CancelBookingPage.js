@@ -1,9 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { db } from "./firebase/firebaseConfig";
-import { doc, getDoc, deleteDoc, updateDoc } from "firebase/firestore";
 import { formatAppointmentDate } from "./dateFormat";
 
+/**
+ * Guest cancel UI.
+ *
+ * Existing email links use ?token=<bookingDocId> (doc id === cancelToken).
+ * This page never writes to Firestore — it calls /api/cancel, which resolves
+ * the token by document ID first (legacy + current), then by cancelToken field.
+ */
 function CancelBookingPage() {
   const [searchParams] = useSearchParams();
   const token = searchParams.get("token");
@@ -21,10 +26,17 @@ function CancelBookingPage() {
       }
 
       try {
-        // New bookings use cancel token as the booking document ID.
-        const bookingSnap = await getDoc(doc(db, "bookings", token));
+        const response = await fetch(
+          `/api/cancel?token=${encodeURIComponent(token)}`
+        );
+        let data = null;
+        try {
+          data = await response.json();
+        } catch {
+          data = null;
+        }
 
-        if (!bookingSnap.exists()) {
+        if (response.status === 404 || data?.error === "NOT_FOUND") {
           setStatus("error");
           setMessage(
             "This cancel link is invalid or expired. Contact the shop to cancel."
@@ -32,34 +44,23 @@ function CancelBookingPage() {
           return;
         }
 
-        const data = bookingSnap.data();
-        if (data.status === "cancelled") {
+        if (response.status === 410 || data?.error === "ALREADY_CANCELLED") {
           setStatus("error");
           setMessage("This booking was already cancelled.");
           return;
         }
 
-        setBookingInfo({
-          bookingId: bookingSnap.id,
-          slotId: data.slotId,
-          name: data.name,
-          date: data.date,
-          time: data.time,
-        });
+        if (!response.ok || !data?.booking) {
+          setStatus("error");
+          setMessage("Could not load booking. Please try again.");
+          return;
+        }
+
+        setBookingInfo(data.booking);
         setStatus("confirm");
       } catch (error) {
         console.error(error);
-        if (error.code === "resource-exhausted") {
-          setMessage(
-            "System is temporarily over its daily limit. Please try again later."
-          );
-        } else if (error.code === "permission-denied") {
-          setMessage(
-            "Cancel link cannot be verified right now. Please contact the shop."
-          );
-        } else {
-          setMessage("Could not load booking. Please try again.");
-        }
+        setMessage("Could not load booking. Please try again.");
         setStatus("error");
       }
     };
@@ -72,51 +73,51 @@ function CancelBookingPage() {
     setBusy(true);
 
     try {
-      const bookingRef = doc(db, "bookings", bookingInfo.bookingId);
-      const slotRef = bookingInfo.slotId
-        ? doc(db, "schedules", bookingInfo.slotId)
-        : null;
+      const response = await fetch("/api/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cancelToken: token }),
+      });
 
-      // Free the slot first (allowed publicly by current rules).
-      if (slotRef) {
-        const slotSnap = await getDoc(slotRef);
-        if (slotSnap.exists()) {
-          await updateDoc(slotRef, { isBooked: false });
-        }
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
       }
 
-      // Public rules usually allow status update; delete is staff-only.
-      try {
-        await updateDoc(bookingRef, {
-          status: "cancelled",
-          cancelledAt: new Date(),
-        });
-      } catch {
-        await deleteDoc(bookingRef);
+      if (response.status === 410 || data?.error === "ALREADY_CANCELLED") {
+        setMessage("This booking was already cancelled.");
+        setStatus("error");
+        return;
+      }
+
+      if (response.status === 404 || data?.error === "NOT_FOUND") {
+        setMessage(
+          "This cancel link is invalid or expired. Contact the shop to cancel."
+        );
+        setStatus("error");
+        return;
+      }
+
+      if (response.status === 429) {
+        setMessage("Too many requests. Please wait a moment and try again.");
+        setStatus("error");
+        return;
+      }
+
+      if (!response.ok) {
+        setMessage("Failed to cancel booking. Please contact the shop.");
+        setStatus("error");
+        return;
       }
 
       setStatus("success");
       setMessage("Your booking has been cancelled.");
     } catch (error) {
       console.error(error);
-      if (error.message === "ALREADY_CANCELLED") {
-        setMessage("This booking was already cancelled.");
-        setStatus("error");
-      } else if (error.code === "resource-exhausted") {
-        setMessage(
-          "System is temporarily over its daily limit. Please try again later."
-        );
-        setStatus("error");
-      } else if (error.code === "permission-denied") {
-        // Slot may already be freed even if booking doc can't be deleted publicly.
-        setStatus("success");
-        setMessage(
-          "Your slot has been released. If it still appears booked, contact the shop."
-        );
-      } else {
-        setMessage("Failed to cancel booking. Please contact the shop.");
-        setStatus("error");
-      }
+      setMessage("Failed to cancel booking. Please contact the shop.");
+      setStatus("error");
     } finally {
       setBusy(false);
     }

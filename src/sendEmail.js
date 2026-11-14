@@ -1,13 +1,14 @@
 /**
- * Client helper for the /api/send-email serverless endpoint.
- * Templates are built on the server — never send raw HTML from the browser.
+ * Client helper for /api/send-email.
+ * Recipient is never sent from the browser — pass bookingId or cancelToken only.
+ * Prefer letting /api/book and /api/cancel send email after their transactions.
  */
-export async function sendAppEmail(payload) {
+export async function sendAppEmail({ type, bookingId, cancelToken }) {
   try {
     const response = await fetch("/api/send-email", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ type, bookingId, cancelToken }),
     });
 
     let data = null;
