@@ -18,10 +18,6 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  if (!enforceRateLimit(req, res, { keyPrefix: "book", max: 15, windowMs: 60_000 })) {
-    return;
-  }
-
   try {
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     const validation = validateBookInput(body);
@@ -30,6 +26,20 @@ module.exports = async (req, res) => {
     }
 
     const { name, email, slotId } = body;
+
+    // Generous: many retries + household NAT; email cap still stops spray abuse
+    if (
+      !(await enforceRateLimit(req, res, {
+        keyPrefix: "book",
+        max: 60,
+        windowMs: 60_000,
+        email: email,
+        emailMax: 20,
+      }))
+    ) {
+      return;
+    }
+
     const db = getDb();
 
     const { cancelToken, booking } = await createBookingTransaction(db, {

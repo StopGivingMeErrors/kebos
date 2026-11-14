@@ -24,10 +24,6 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  if (!enforceRateLimit(req, res, { keyPrefix: "email", max: 10, windowMs: 60_000 })) {
-    return;
-  }
-
   try {
     if (!process.env.RESEND_API_KEY) {
       console.error("Missing RESEND_API_KEY");
@@ -36,6 +32,18 @@ module.exports = async (req, res) => {
 
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     const { type, bookingId, cancelToken } = body;
+
+    if (
+      !(await enforceRateLimit(req, res, {
+        keyPrefix: "email",
+        max: 40,
+        windowMs: 60_000,
+        email: cancelToken || bookingId || null,
+        emailMax: 20,
+      }))
+    ) {
+      return;
+    }
 
     if (!type) {
       return res.status(400).json({ error: "Missing type" });
