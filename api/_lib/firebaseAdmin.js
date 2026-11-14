@@ -1,4 +1,11 @@
-const admin = require("firebase-admin");
+const {
+  initializeApp,
+  getApps,
+  cert,
+  applicationDefault,
+} = require("firebase-admin/app");
+const { getFirestore } = require("firebase-admin/firestore");
+const { getAuth: getAuthMod } = require("firebase-admin/auth");
 
 let initialized = false;
 
@@ -48,14 +55,9 @@ function missingAdminEnvMessage() {
 }
 
 function initFirebaseAdmin() {
-  if (initialized) {
-    return admin;
-  }
-
-  const existingApps = admin.apps || [];
-  if (existingApps.length) {
+  if (initialized || getApps().length) {
     initialized = true;
-    return admin;
+    return;
   }
 
   const projectId = process.env.FIREBASE_PROJECT_ID || "kebos-d63af";
@@ -65,12 +67,12 @@ function initFirebaseAdmin() {
   // Prefer explicit cert env; else Application Default Credentials (local scripts)
   if ((!clientEmail || !process.env.FIREBASE_PRIVATE_KEY) && gac) {
     try {
-      admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
+      initializeApp({
+        credential: applicationDefault(),
         projectId,
       });
       initialized = true;
-      return admin;
+      return;
     } catch (error) {
       console.error(
         "[firebaseAdmin] GOOGLE_APPLICATION_CREDENTIALS init failed:",
@@ -104,8 +106,8 @@ function initFirebaseAdmin() {
   }
 
   try {
-    admin.initializeApp({
-      credential: admin.credential.cert({
+    initializeApp({
+      credential: cert({
         projectId,
         clientEmail,
         privateKey,
@@ -125,15 +127,16 @@ function initFirebaseAdmin() {
   }
 
   initialized = true;
-  return admin;
 }
 
 function getDb() {
-  return initFirebaseAdmin().firestore();
+  initFirebaseAdmin();
+  return getFirestore();
 }
 
 function getAuth() {
-  return initFirebaseAdmin().auth();
+  initFirebaseAdmin();
+  return getAuthMod();
 }
 
 /** Safe public message for API responses (no secret material). */
@@ -153,5 +156,4 @@ module.exports = {
   getAuth,
   getPrivateKey,
   adminConfigClientMessage,
-  admin,
 };
