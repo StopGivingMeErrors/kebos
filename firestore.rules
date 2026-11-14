@@ -5,23 +5,19 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Guests may read free/booked slots for the booking UI.
+    // All writes (including isBooked) are staff-only or Admin SDK (server).
     match /schedules/{slotId} {
       allow read: if true;
-      allow create, delete: if isSignedIn();
-      allow update: if isSignedIn()
-        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isBooked']);
+      allow create, update, delete: if isSignedIn();
     }
 
-    // Public create + get-by-id (cancel links use booking ID as token).
-    // Public may mark cancelled; only staff can list/delete.
+    // Guests cannot create, get, list, update, or delete bookings from the client.
+    // Book/cancel go through /api/book and /api/cancel (Admin SDK).
+    // Staff (signed-in) can list/read/manage for the dashboard.
     match /bookings/{bookingId} {
-      allow create: if true;
-      allow get: if true;
-      allow list: if isSignedIn();
-      allow update: if isSignedIn()
-        || request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['status', 'cancelledAt']);
-      allow delete: if isSignedIn();
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSignedIn();
     }
   }
 }
