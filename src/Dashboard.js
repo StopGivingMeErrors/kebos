@@ -492,13 +492,13 @@ const Dashboard = () => {
     }
   };
 
-  // Clear upcoming schedule slots
+  // Clear upcoming FREE schedule slots only (never booked / active-booking slots)
   const clearAllSlots = async () => {
     const ok = await toast.confirm(
-      "Delete all upcoming schedule slots? This cannot be undone.",
+      "Delete all upcoming free schedule slots? Booked slots are kept.",
       {
-        title: "Clear upcoming slots",
-        confirmLabel: "Clear all",
+        title: "Clear upcoming free slots",
+        confirmLabel: "Clear free slots",
         danger: true,
       }
     );
@@ -507,13 +507,46 @@ const Dashboard = () => {
     setLoading(true);
 
     try {
-      const snapshot = await getDocs(
-        query(collection(db, "schedules"), where("date", ">=", todayISO()))
+      const today = todayISO();
+      const [slotsSnap, bookingsSnap] = await Promise.all([
+        getDocs(query(collection(db, "schedules"), where("date", ">=", today))),
+        getDocs(
+          query(collection(db, "bookings"), where("date", ">=", today))
+        ),
+      ]);
+
+      const activeSlotIds = new Set();
+      bookingsSnap.docs.forEach((d) => {
+        const data = d.data();
+        if (data.status === "cancelled") return;
+        if (data.slotId) activeSlotIds.add(data.slotId);
+      });
+
+      const toDelete = [];
+      let skippedBooked = 0;
+      let skippedActiveBooking = 0;
+
+      slotsSnap.docs.forEach((d) => {
+        const data = d.data();
+        if (data.isBooked === true) {
+          skippedBooked += 1;
+          return;
+        }
+        if (activeSlotIds.has(d.id)) {
+          skippedActiveBooking += 1;
+          return;
+        }
+        toDelete.push(d);
+      });
+
+      if (toDelete.length > 0) {
+        await deleteDocsInBatches(toDelete);
+      }
+
+      const skipped = skippedBooked + skippedActiveBooking;
+      toast.success(
+        `Cleared ${toDelete.length} free slot(s). Skipped ${skipped} (booked: ${skippedBooked}, active booking: ${skippedActiveBooking}).`
       );
-
-      await deleteDocsInBatches(snapshot.docs);
-
-      toast.success(`Cleared ${snapshot.size} upcoming slots.`);
       await loadDashboardData({ silent: true });
     } catch (error) {
       console.error("Error clearing slots:", error);

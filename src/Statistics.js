@@ -9,6 +9,7 @@ import {
   formatMonthLabel,
 } from "./dateFormat";
 import { useToast } from "./ToastContext";
+import statsLogic from "./statsLogic";
 import {
   BarChart,
   Bar,
@@ -110,42 +111,31 @@ const Statistics = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const bookingsByDay = useMemo(() => {
-    const counts = {};
-    bookings.forEach((booking) => {
-      if (!booking.date) return;
-      counts[booking.date] = (counts[booking.date] || 0) + 1;
-    });
+  const summary = useMemo(
+    () => statsLogic.summarizeBookings(bookings),
+    [bookings]
+  );
 
-    return Object.entries(counts)
-      .map(([date, count]) => ({
-        date,
-        label: formatAppointmentDateShort(date),
-        count,
-      }))
-      .sort((a, b) => new Date(a.date) - new Date(b.date))
-      .slice(-30);
-  }, [bookings]);
+  const bookingsByDay = useMemo(
+    () =>
+      summary.byDay.map((row) => ({
+        ...row,
+        label: formatAppointmentDateShort(row.date),
+      })),
+    [summary]
+  );
 
-  const bookingsByMonth = useMemo(() => {
-    const counts = {};
-    bookings.forEach((booking) => {
-      if (!booking.date || booking.date.length < 7) return;
-      const month = booking.date.substring(0, 7);
-      counts[month] = (counts[month] || 0) + 1;
-    });
+  const bookingsByMonth = useMemo(
+    () =>
+      summary.byMonth.map((row) => ({
+        ...row,
+        label: formatMonthLabel(row.month),
+      })),
+    [summary]
+  );
 
-    return Object.entries(counts)
-      .map(([month, count]) => ({
-        month,
-        label: formatMonthLabel(month),
-        count,
-      }))
-      .sort((a, b) => a.month.localeCompare(b.month))
-      .slice(-12);
-  }, [bookings]);
-
-  const totalBookings = bookings.length;
+  const totalBookings = summary.totalNonCancelled;
+  const totalCancelled = summary.totalCancelled;
   const cacheLabel = cacheMeta
     ? new Date(cacheMeta).toLocaleString("en-GB", {
         day: "numeric",
@@ -229,25 +219,56 @@ const Statistics = () => {
 
       <div
         style={{
-          background: darkMode ? "#2a2a2a" : "#f3f4f6",
-          padding: "2rem",
-          borderRadius: "8px",
+          display: "flex",
+          gap: "1rem",
+          flexWrap: "wrap",
           marginBottom: "2rem",
-          textAlign: "center",
         }}
       >
-        <h2
+        <div
           style={{
-            margin: "0 0 0.5rem 0",
-            color: "#2563eb",
-            fontSize: "3rem",
+            flex: "1 1 200px",
+            background: darkMode ? "#2a2a2a" : "#f3f4f6",
+            padding: "2rem",
+            borderRadius: "8px",
+            textAlign: "center",
           }}
         >
-          {totalBookings}
-        </h2>
-        <p style={{ margin: 0, fontSize: "1.2rem", opacity: 0.8 }}>
-          Total bookings (all time)
-        </p>
+          <h2
+            style={{
+              margin: "0 0 0.5rem 0",
+              color: "#2563eb",
+              fontSize: "3rem",
+            }}
+          >
+            {totalBookings}
+          </h2>
+          <p style={{ margin: 0, fontSize: "1.1rem", opacity: 0.8 }}>
+            Bookings (excl. cancelled)
+          </p>
+        </div>
+        <div
+          style={{
+            flex: "1 1 200px",
+            background: darkMode ? "#2a2a2a" : "#f3f4f6",
+            padding: "2rem",
+            borderRadius: "8px",
+            textAlign: "center",
+          }}
+        >
+          <h2
+            style={{
+              margin: "0 0 0.5rem 0",
+              color: "#9ca3af",
+              fontSize: "3rem",
+            }}
+          >
+            {totalCancelled}
+          </h2>
+          <p style={{ margin: 0, fontSize: "1.1rem", opacity: 0.8 }}>
+            Cancelled (all time)
+          </p>
+        </div>
       </div>
 
       <div
