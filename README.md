@@ -1,70 +1,99 @@
-# Getting Started with Create React App
+# Kevos
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+Online appointment booking for a barber shop. Guests pick an open slot and leave a name and email — **no customer accounts**. The barber manages the schedule from a private dashboard.
 
-## Available Scripts
+## Why no guest accounts
 
-In the project directory, you can run:
+Most customers book once and leave. Forcing sign-up adds friction and stores passwords you do not need. Possession of the cancel link (token in the email) is enough for a guest to cancel. The barber signs in with Firebase Auth and a custom claim.
 
-### `npm start`
+## Architecture
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+| Piece | Role |
+| --- | --- |
+| React (Create React App) | Public booking UI, cancel page, barber dashboard & statistics |
+| Vercel serverless (`api/`) | `book`, `cancel`, `send-email`, `health` — Firebase Admin SDK |
+| Cloud Firestore | Schedules and bookings |
+| Resend | Confirmation and cancellation emails |
+| Upstash Redis (REST) | Rate limiting (Firestore `_rateLimits` only as fail-open fallback) |
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+```
+Guest browser ──► React SPA ──► /api/book | /api/cancel ──► Firestore + Resend
+Barber browser ─► Dashboard (Auth + staff claim) ──► Firestore (client reads)
+```
 
-### `npm test`
+## Security model
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+| Actor | Can | Enforced by |
+| --- | --- | --- |
+| Anyone | Read open slots; book via API; cancel via email token | Public slot reads; Admin SDK for book/cancel writes |
+| Guest with cancel link | Preview date/time/name; POST cancel | Token = booking document id (legacy compatible); preview omits email |
+| Barber (`staff: true` claim) | Dashboard, schedules, read bookings, staff cancel | Firebase Auth custom claim + Firestore rules |
+| Other signed-in users | Nothing sensitive | Rules deny non-staff |
 
-### `npm run build`
+Additional controls:
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+- **Origin allowlist** on mutating APIs (POST). Cancel **GET** preview also accepts same-origin browser requests that omit `Origin` (`Sec-Fetch-Site: same-origin` or allowlisted `Referer`).
+- **Rate limiting** per IP (and email on book) via Upstash when configured.
+- Staff claim set with `scripts/set-staff-claim.js` (operator only). Barber must sign out and in once after the claim is set.
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+## Data model
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+**`schedules/{slotId}`** — `date` (ISO), `time`, `isBooked`
 
-### `npm run eject`
+**`bookings/{cancelToken}`** — document id is the cancel token (`crypto.randomUUID()`). Fields include `name`, `email`, `slotId`, `date`, `time`, `status` (`active` \| `cancelled`), `cancelToken`, `timestamp`.
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+**`_rateLimits/{id}`** — server-only rate windows (Admin SDK); clients denied by rules.
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+## Environment variables (names only)
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+Set these on Vercel (Production). Values never belong in git.
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+| Name | Used for |
+| --- | --- |
+| `FIREBASE_PROJECT_ID` | Admin SDK |
+| `FIREBASE_CLIENT_EMAIL` | Admin SDK |
+| `FIREBASE_PRIVATE_KEY` | Admin SDK (PEM with `\n` newlines) |
+| `RESEND_API_KEY` | Email |
+| `EMAIL_FROM` | From header |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Rate limit (preferred) |
+| or `*_KV_REST_API_URL` / `*_KV_REST_API_TOKEN` | Vercel KV-style Upstash REST |
+| `ALLOWED_ORIGINS` | Optional comma-separated origin override |
 
-## Learn More
+Client Firebase config lives in `src/firebase/firebaseConfig.js` (public web API key only).
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+## Local development
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+```bash
+npm ci
+npm start
+```
 
-### Code Splitting
+Emulator tests (Java 21 required for the Firestore emulator):
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+```bash
+# Windows example
+set JAVA_HOME=C:\Program Files\Microsoft\jdk-21.0.13.21-hotspot
+set PATH=%JAVA_HOME%\bin;%PATH%
 
-### Analyzing the Bundle Size
+npm run test:security
+npm run build
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+Individual suites: `test:rules`, `test:book-concurrency`, `test:ratelimit`, `test:cors`, `test:client-ip`, `test:stats`, `test:stats-cache`, `test:admin-config`, `test:upstash-env`.
 
-### Making a Progressive Web App
+Staff claim (operator, with Admin credentials in env — never commit keys):
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+```bash
+node scripts/set-staff-claim.js <UID> --apply
+node scripts/check-staff-claim.js <UID>
+```
 
-### Advanced Configuration
+## Screenshot
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+<!-- SCREENSHOT: paste a public booking or dashboard image here -->
 
-### Deployment
+_Add a screenshot of the booking page or dashboard when available._
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+## License
 
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+Private project — all rights reserved.
