@@ -2,7 +2,7 @@
  * Firestore security rules tests (Firebase emulator).
  *
  * Run: npm run test:rules
- * Requires Java for the Firestore emulator.
+ * Requires JDK 21+ for the Firestore emulator.
  */
 const {
   initializeTestEnvironment,
@@ -17,6 +17,7 @@ const {
   getDocs,
   setDoc,
   updateDoc,
+  deleteDoc,
   collection,
 } = require("firebase/firestore");
 
@@ -26,26 +27,30 @@ let testEnv;
 let passed = 0;
 let failed = 0;
 
+async function seed() {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, "schedules", "slot1"), {
+      date: "2099-01-15",
+      time: "10:00",
+      isBooked: true,
+    });
+    await setDoc(doc(db, "bookings", "booking-alice"), {
+      name: "Alice",
+      email: "alice@example.com",
+      slotId: "slot1",
+      date: "2099-01-15",
+      time: "10:00",
+      cancelToken: "booking-alice",
+      status: "active",
+    });
+  });
+}
+
 async function test(name, fn) {
   try {
     await testEnv.clearFirestore();
-    await testEnv.withSecurityRulesDisabled(async (context) => {
-      const db = context.firestore();
-      await setDoc(doc(db, "schedules", "slot1"), {
-        date: "2099-01-15",
-        time: "10:00",
-        isBooked: true,
-      });
-      await setDoc(doc(db, "bookings", "booking-alice"), {
-        name: "Alice",
-        email: "alice@example.com",
-        slotId: "slot1",
-        date: "2099-01-15",
-        time: "10:00",
-        cancelToken: "booking-alice",
-        status: "active",
-      });
-    });
+    await seed();
     await fn();
     passed += 1;
     console.log(`  PASS  ${name}`);
@@ -90,10 +95,26 @@ async function main() {
     );
   });
 
-  await test("signed-in staff can update isBooked", async () => {
-    const staff = testEnv.authenticatedContext("barber-1").firestore();
+  await test("staff (claim) can update isBooked", async () => {
+    const staff = testEnv
+      .authenticatedContext("barber-1", { staff: true })
+      .firestore();
     await assertSucceeds(
       updateDoc(doc(staff, "schedules", "slot1"), { isBooked: false })
+    );
+  });
+
+  await test("authenticated NON-staff cannot write schedules", async () => {
+    const user = testEnv.authenticatedContext("random-user").firestore();
+    await assertFails(
+      updateDoc(doc(user, "schedules", "slot1"), { isBooked: false })
+    );
+    await assertFails(
+      setDoc(doc(user, "schedules", "slot-hack"), {
+        date: "2099-03-01",
+        time: "09:00",
+        isBooked: false,
+      })
     );
   });
 
@@ -113,29 +134,58 @@ async function main() {
     );
   });
 
-  await test("public cannot get another guest booking by id", async () => {
+  await test("public cannot get booking by id", async () => {
     const unauth = testEnv.unauthenticatedContext().firestore();
     await assertFails(getDoc(doc(unauth, "bookings", "booking-alice")));
   });
 
-  await test("public cannot list bookings (guest emails)", async () => {
+  await test("public cannot list bookings", async () => {
     const unauth = testEnv.unauthenticatedContext().firestore();
     await assertFails(getDocs(collection(unauth, "bookings")));
   });
 
-  await test("public cannot update booking status", async () => {
-    const unauth = testEnv.unauthenticatedContext().firestore();
+  await test("authenticated NON-staff cannot read bookings", async () => {
+    const user = testEnv.authenticatedContext("random-user").firestore();
+    await assertFails(getDoc(doc(user, "bookings", "booking-alice")));
+    await assertFails(getDocs(collection(user, "bookings")));
+  });
+
+  await test("staff can read and list bookings", async () => {
+    const staff = testEnv
+      .authenticatedContext("barber-1", { staff: true })
+      .firestore();
+    await assertSucceeds(getDoc(doc(staff, "bookings", "booking-alice")));
+    await assertSucceeds(getDocs(collection(staff, "bookings")));
+  });
+
+  await test("staff cannot write bookings from client", async () => {
+    const staff = testEnv
+      .authenticatedContext("barber-1", { staff: true })
+      .firestore();
     await assertFails(
-      updateDoc(doc(unauth, "bookings", "booking-alice"), {
+      updateDoc(doc(staff, "bookings", "booking-alice"), {
         status: "cancelled",
+      })
+    );
+    await assertFails(deleteDoc(doc(staff, "bookings", "booking-alice")));
+    await assertFails(
+      setDoc(doc(staff, "bookings", "booking-new"), {
+        name: "X",
+        email: "x@y.com",
+        status: "active",
       })
     );
   });
 
-  await test("signed-in staff can read and list bookings", async () => {
-    const staff = testEnv.authenticatedContext("barber-1").firestore();
-    await assertSucceeds(getDoc(doc(staff, "bookings", "booking-alice")));
-    await assertSucceeds(getDocs(collection(staff, "bookings")));
+  await test("clients cannot read or write _rateLimits", async () => {
+    const unauth = testEnv.unauthenticatedContext().firestore();
+    const staff = testEnv
+      .authenticatedContext("barber-1", { staff: true })
+      .firestore();
+    await assertFails(getDoc(doc(unauth, "_rateLimits", "book:ip:1")));
+    await assertFails(
+      setDoc(doc(staff, "_rateLimits", "book:ip:1"), { count: 1 })
+    );
   });
 
   await testEnv.cleanup();

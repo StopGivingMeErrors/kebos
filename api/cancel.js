@@ -1,6 +1,7 @@
 const { applyCors } = require("./_lib/cors");
 const { enforceRateLimit } = require("./_lib/rateLimit");
-const { getDb, getAuth } = require("./_lib/firebaseAdmin");
+const { getDb } = require("./_lib/firebaseAdmin");
+const { requireStaff } = require("./_lib/staffAuth");
 const {
   findBookingByCancelToken,
   findBookingById,
@@ -20,19 +21,6 @@ function publicBookingView(record) {
   };
 }
 
-async function verifyStaffToken(req) {
-  const header = req.headers.authorization || "";
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  if (!match) return null;
-  try {
-    const decoded = await getAuth().verifyIdToken(match[1]);
-    return decoded;
-  } catch (error) {
-    console.error("ID token verify failed:", error.message);
-    return null;
-  }
-}
-
 module.exports = async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
@@ -40,15 +28,21 @@ module.exports = async (req, res) => {
   if (cors.handled) return;
   if (!cors.ok) return;
 
-  if (!enforceRateLimit(req, res, { keyPrefix: "cancel", max: 20, windowMs: 60_000 })) {
-    return;
-  }
-
   try {
     const db = getDb();
 
     // Guest preview: load booking summary by cancel token (no email exposed)
     if (req.method === "GET") {
+      if (
+        !(await enforceRateLimit(req, res, {
+          keyPrefix: "cancel-get",
+          max: 60,
+          windowMs: 60_000,
+        }))
+      ) {
+        return;
+      }
+
       const token = String(req.query?.token || "").trim();
       if (!token) {
         return res.status(400).json({ error: "Missing token" });
@@ -76,13 +70,30 @@ module.exports = async (req, res) => {
     let record = null;
 
     if (cancelToken) {
+      if (
+        !(await enforceRateLimit(req, res, {
+          keyPrefix: "cancel",
+          max: 30,
+          windowMs: 60_000,
+          email: null,
+        }))
+      ) {
+        return;
+      }
       // Guest path — possession of the token from the email link
       record = await findBookingByCancelToken(db, cancelToken);
     } else if (bookingId) {
-      // Barber path — must present a verified Firebase ID token
-      const staff = await verifyStaffToken(req);
-      if (!staff) {
-        return res.status(401).json({ error: "Unauthorized" });
+      // Barber path — verified ID token + staff:true claim
+      const staffGate = await requireStaff(req, res);
+      if (!staffGate.ok) return;
+      if (
+        !(await enforceRateLimit(req, res, {
+          keyPrefix: "cancel-staff",
+          max: 60,
+          windowMs: 60_000,
+        }))
+      ) {
+        return;
       }
       record = await findBookingById(db, bookingId);
     } else {

@@ -14,7 +14,8 @@ function initFirebaseAdmin() {
     return admin;
   }
 
-  if (admin.apps.length) {
+  const existingApps = admin.apps || [];
+  if (existingApps.length) {
     initialized = true;
     return admin;
   }

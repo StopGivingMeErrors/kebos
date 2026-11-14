@@ -1,23 +1,29 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isSignedIn() {
-      return request.auth != null;
+    // Barber only — custom claim staff:true (set via scripts/set-staff-claim.js).
+    // Any other signed-in user (including if Auth sign-up is open) is denied.
+    function isStaff() {
+      return request.auth != null && request.auth.token.staff == true;
     }
 
-    // Guests may read free/booked slots for the booking UI.
-    // All writes (including isBooked) are staff-only or Admin SDK (server).
+    // Guests may read slots for the booking UI.
+    // Writes (create/update/delete) are staff-only. Booking flips isBooked via Admin SDK.
     match /schedules/{slotId} {
       allow read: if true;
-      allow create, update, delete: if isSignedIn();
+      allow create, update, delete: if isStaff();
     }
 
-    // Guests cannot create, get, list, update, or delete bookings from the client.
-    // Book/cancel go through /api/book and /api/cancel (Admin SDK).
-    // Staff (signed-in) can list/read/manage for the dashboard.
+    // Guests never touch bookings from the client (book/cancel via /api/*).
+    // Staff may read/list for the dashboard. No client writes to bookings at all.
     match /bookings/{bookingId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if isSignedIn();
+      allow read: if isStaff();
+      allow create, update, delete: if false;
+    }
+
+    // Rate-limit windows written only by Admin SDK (server). Deny all client access.
+    match /_rateLimits/{docId} {
+      allow read, write: if false;
     }
   }
 }
