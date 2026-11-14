@@ -1,0 +1,84 @@
+POST-RESET SEQUENCE — run only after you confirm Firestore quota has reset (~10:00 Greek).
+Still: no loops; smoke = ONE book + ONE cancel on ONE test slot only.
+Prefer Upstash so rate limits cost 0 Firestore. Spark ~50k R / ~20k W/day.
+
+Test constants (only these):
+  TEST_DATE=2099-06-15  TEST_TIME=10:00
+  TEST_SLOT_ID=smoke-test-slot-2099-0615-1000
+  TEST_EMAIL=errorstopper@gmail.com
+
+--------------------------------------------------------------------
+0) Preflight (optional)
+   - Confirm Upstash/KV env still present on Vercel (names only).
+   Budget: 0 R / 0 W
+
+1) Promote staged crash-fix (does NOT push git)
+   - vercel promote kebos-c2hsbro5b-errors-projects-7db36315.vercel.app
+   - Re-enable normal domain auto-assignment (promote does this).
+   - Verify: vercel inspect https://kevos.site | www.kevos.site | kebos.vercel.app
+     each must show url kebos-c2hsbro5b-… (or the promoted deployment id)
+   Budget: 0 R / 0 W
+
+2) Health + CORS on production host (no Firestore)
+   - GET  https://kevos.site/api/health → 200 {ok:true}
+   - POST /api/book  Origin:https://evil.example → 403
+   - POST /api/book  no Origin → 403
+   Budget: 0 R / 0 W
+
+3) ONE book + ONE cancel on test slot only
+   - Admin create/reset TEST_SLOT_ID (isBooked:false) — 1 W
+   - Readonly check TEST_DATE schedules/bookings — ≤2 R (abort if foreign data)
+   - POST /api/book once (TEST_EMAIL + TEST_SLOT_ID) — ~1–2 R + 2 W (+0 RL if Upstash)
+   - POST /api/cancel once (cancelToken) — ~2–3 R + 2 W
+   - Confirm slot freed; do NOT run rate-limit loops
+   Budget: ≤10 R / ≤10 W
+
+4) Staff-path check with barber’s real token (YOU sign out/in first)
+   - STOP here until barber has signed out and signed in (refresh ID token).
+   - POST /api/cancel with bookingId + Authorization: Bearer <real staff token>
+     against a TEST booking only (or expect 404 if using a fake id after auth OK)
+   - Expect: 401/403 if non-staff; for staff+fake id → 404; never FUNCTION_INVOCATION_FAILED
+   Budget: 0–2 R / 0 W (Auth verify; Firestore only if token valid)
+
+5) Staff claim script (if not already set)
+   - node scripts/set-staff-claim.js <barberUid>
+   - node scripts/check-staff-claim.js <barberUid>
+   Budget: 0 Firestore (Auth API only)
+
+6) Audit once
+   - node scripts/audit-consistency.js
+   Budget: R = schedules_count + bookings_count (e.g. ~5k if ~4k bookings + ~1k slots); 0 W
+   - Run ONCE; do not re-run same day
+
+7) Rules deploy via service-account route
+   - GOOGLE_APPLICATION_CREDENTIALS=<SA json outside repo> node scripts/_sa-rules-access.js check
+   - then … deploy  (firestore.rules, not .prev)
+   - Keep firestore.rules.prev for rollback
+   Budget: 0 Firestore data R/W (Rules API only)
+
+8) Final guest + barber check
+   - Guest: book + cancel again on TEST slot only — ≤10 R / ≤10 W
+   - Unauth: read bookings denied; write schedules denied (rules tests / client)
+   - Barber: confirm dashboard still shows real bookings (YOU confirm in UI)
+   - Dashboard load cost: ~2 queries of upcoming docs only (tens–hundreds R), not full history
+
+9) Cleanup ONLY our test data (after you approve)
+   - Delete docs with TEST_SLOT_ID / TEST_DATE / TEST_EMAIL smoke rows only
+   - Never touch real customer bookings/slots
+   Budget: ≤5 W
+
+10) Push to master so GitHub matches production
+   - git push origin master  (only after promote + smoke OK)
+   - Wait for GitHub→Vercel Production Ready
+   - Verify: vercel inspect https://kevos.site shows the push deployment
+   - GET /api/health → 200
+   - Confirm aliases still on that deployment
+   Budget: 0 R / 0 W (unless health only)
+
+HARD LIMITS THIS DAY
+- No Statistics full refresh
+- No audit twice
+- No 70× / burn loops
+- No clearAllSlots / bulk slot generation
+- No rules rollback unless deploy breaks checks
+--------------------------------------------------------------------

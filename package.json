@@ -10,7 +10,7 @@
     "@upstash/ratelimit": "^2.2.1",
     "@upstash/redis": "^1.41.0",
     "firebase": "^12.3.0",
-    "firebase-admin": "^14.5.1",
+    "firebase-admin": "12.7.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.9.1",
@@ -43,6 +43,9 @@
       "react-app",
       "react-app/jest"
     ]
+  },
+  "engines": {
+    "node": "22.x"
   },
   "browserslist": {
     "production": [

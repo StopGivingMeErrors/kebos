@@ -5,7 +5,6 @@ const {
   applicationDefault,
 } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
-const { getAuth: getAuthMod } = require("firebase-admin/auth");
 
 let initialized = false;
 
@@ -135,7 +134,10 @@ function getDb() {
 }
 
 function getAuth() {
+  // Lazy-load Auth: firebase-admin v14 → jwks-rsa@4 → jose@6 is ESM-only and
+  // crashes Vercel CJS bundles with ERR_REQUIRE_ESM if required at module load.
   initFirebaseAdmin();
+  const { getAuth: getAuthMod } = require("firebase-admin/auth");
   return getAuthMod();
 }
 
